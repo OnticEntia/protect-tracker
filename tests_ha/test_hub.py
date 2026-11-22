@@ -146,5 +146,5 @@ async def test_config_flow(hass):
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     assert result["type"] == "form"
     with patch("custom_components.protect_tracker.async_setup_entry", return_value=True):
-        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"url": "ws://127.0.0.1:8787/link", "stream": "high"})
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"url": "ws://127.0.0.1:8791/link", "stream": "high"})
     assert result["type"] == "create_entry" and result["options"]["stream"] == "high"

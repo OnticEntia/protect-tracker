@@ -305,7 +305,7 @@ def args_min_shift(box) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8787)
+    ap.add_argument("--port", type=int, default=8791)
     ap.add_argument("--models", default=os.environ.get("TRACKER_MODELS", "models"))
     ap.add_argument("--model", default="m")
     ap.add_argument("--seconds", type=int, default=600)
