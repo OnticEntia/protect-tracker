@@ -48,7 +48,7 @@ from .clock import FeedClock
 from .detect import iou
 from .local import LocalView
 from .rtp import Unwrap
-from .tracks import LocalTracker, Track
+from .tracks import STANDING_KINDS, LocalTracker, Track
 
 KINDS = {"person": "person", "vehicle": "vehicle", "animal": "animal", "face": "face"}  # Protect's kind -> ours
 BIND_IOU = 0.4  # a local track is bound to a Protect track when they overlap this much in the report's frame
@@ -111,14 +111,14 @@ class _Theirs:
 class CameraFollow:
     def __init__(self, stamp_ms: float = -125.0, epoch: str = "0") -> None:
         self.stamp = float(stamp_ms)
-        self.local = LocalView(epoch)  # the same tracks, told on our own word (local.py)
+        self.tracker = LocalTracker()
+        self.local = LocalView(epoch, self.tracker.place_of)  # the same tracks, told on our own word (local.py)
         self.local_packets: list[dict[str, Any]] = []  # what the last frame gave for those who asked for that
         self._local_off: float | None = None  # what is added to our clock for the local stream's wall clock
         self._local_at = 0.0  # our clock at the last frame (for bringing that to Protect's, gently)
         self._local_sent = 0.0  # ... and when the local stream last said anything
         self._local_had = False  # did its last packet have tracks in it
         self.clock = FeedClock()
-        self.tracker = LocalTracker()
         self.theirs: dict[str, _Theirs] = {}
         self.event: dict[str, Any] = {}
         self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "left": 0, "far": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
@@ -179,7 +179,7 @@ class CameraFollow:
             mine.stationary = bool(tr.get("stationary"))
             mine.reported = frame_time
             boxes[tid] = to_box(tr["coord"])
-            if mine.stationary and mine.kind is not None:
+            if mine.stationary and mine.kind in STANDING_KINDS:
                 self.tracker.stands(mine.kind, boxes[tid], frame_time)  # Protect says it stands there: remembered
             if not mine.first_box:
                 mine.first_box = boxes[tid]

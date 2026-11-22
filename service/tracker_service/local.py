@@ -12,11 +12,18 @@ With nobody to say "that is nothing", being sure is this module's own job:
 
   - a thing must have been found for a moment (a quarter of a second, a few
     frames running), surely enough and big enough for its kind;
-  - and it must have travelled from where it was first found. What only
-    stands there (a parked car, a bike on a porch) is never told, however
-    often its box comes and goes; a parked car that drives off is told from
-    the moment it has moved;
-  - once told, a track is told until it ends, also while it stands still.
+  - and it must have travelled from where it was first found: half its own
+    size at least (the box of a parked car shifts a little whenever something
+    passes in front of it), and be on the move at that moment;
+  - and it must not be sitting where something is known to stand (the
+    tracker's memory of parked things, from Protect and from its own eyes).
+    So what only stands there (a parked car, a bike on a porch) is never
+    told, however often its box comes and goes; a parked car that drives off
+    is told once it has left its place;
+  - once told, a person is told until their track ends, also while they
+    stand still. A vehicle that has come to rest (it stands in a remembered
+    place and is not moving) is left out again until it moves: a car that
+    has parked is no longer anything to follow.
 
 Plain Python; fed by follow.py, which does the following itself.
 """
@@ -33,6 +40,7 @@ SURE = {"person": (0.45, 0.025), "vehicle": (0.5, 0.04), "animal": (0.5, 0.04)}
 PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)
+TRAVEL_OWN = 0.5  # ... and at least this share of its own smaller side
 COAST_MS = 500  # a told track not found in a frame keeps moving as it did, until the tracker gives it up (tracks.GONE_MS)
 
 
@@ -58,8 +66,9 @@ class _Told:
 
 
 class LocalView:
-    def __init__(self, epoch: str) -> None:
+    def __init__(self, epoch: str, standing=None) -> None:
         self.epoch = epoch  # part of every track id, so ids are not used again after a restart
+        self.standing = standing or (lambda kind, box: None)  # is this box where something is known to stand
         self.tracks: dict[int, _Told] = {}
         self.stats = {"told": 0, "confirmed": 0, "people": 0}
 
@@ -90,12 +99,15 @@ class LocalView:
         if need is None or not track.born_box:
             return False
         a, b = _middle(track.born_box), _middle(track.box)
+        own = min(track.box[2] - track.box[0], track.box[3] - track.box[1])
         return (
             told.best >= need[0]
             and track.box[3] - track.box[1] >= need[1]
             and track.hits >= PERSIST_HITS
             and track.seen - track.born >= PERSIST_MS
-            and abs(a[0] - b[0]) + abs(a[1] - b[1]) >= TRAVEL
+            and abs(a[0] - b[0]) + abs(a[1] - b[1]) >= max(TRAVEL, TRAVEL_OWN * own)
+            and track.moving()
+            and self.standing(track.kind, track.box) is None
         )
 
     def frame(self, when: float, tracks: dict[int, Track], seen: list[Track], ended: list[Track]) -> list[dict[str, Any]]:
@@ -124,6 +136,8 @@ class LocalView:
                 self.stats["people"] += t.kind == "person"
                 if told.protect is not None:
                     self.stats["confirmed"] += 1
+            elif t.kind != "person" and not t.moving() and self.standing(t.kind, t.box) is not None:
+                continue  # it has come to rest where things stand: nothing to follow until it moves again
             entries.append(self._entry(t, told, box))
             if t.kind == "person":
                 people.append((told, box))

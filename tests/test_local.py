@@ -98,7 +98,7 @@ def test_a_parked_car_that_drives_off_is_told_from_when_it_moves():
     follow = CameraFollow(STAMP, epoch="t5")
     car = lambda ms: (0.2 + 0.0003 * max(0, ms - 3000), 0.2, 0.4 + 0.0003 * max(0, ms - 3000), 0.4)  # noqa: E731
     out = [p for p in play(follow, 5000, lambda ms: {"vehicle": [car(ms) + (0.9,)]}) if p["tracks"]]
-    assert out and 3000 < frame_ms(out[0]) < 3300 and out[0]["tracks"][0]["objectType"] == "vehicle"
+    assert out and 3000 < frame_ms(out[0]) < 3500 and out[0]["tracks"][0]["objectType"] == "vehicle"
 
 
 def test_too_small_or_too_unsure_is_not_told():
@@ -148,3 +148,36 @@ def test_the_wall_clock_is_brought_to_protects_gently():
     for a, b in zip(out, out[1:]):
         d_stream, d_wall = b["clockStream"] - a["clockStream"], b["clockWall"] - a["clockWall"]
         assert d_wall > 0 and abs(d_wall - d_stream) <= 0.1 * d_stream + 0.2
+
+
+def test_a_parked_car_whose_box_shifts_when_something_passes_is_not_told():
+    """What the live stream showed: a parked car's box is pushed about (half hidden, found narrower, found
+    again) each time a car passes in front, and lost in between. It is never something to follow."""
+    follow = CameraFollow(STAMP, epoch="p1")
+    def scene(ms):
+        phase = (ms // 1500) % 3
+        if phase == 1:
+            return {"vehicle": []}  # hidden
+        shove = 0.03 if phase == 2 and (ms % 1500) < 400 else 0.0  # found again a little to the side, then where it is
+        return {"vehicle": [(0.05 + shove, 0.2, 0.2 + shove * 0.3, 0.33, 0.87)]}
+    out = play(follow, 12000, scene, lambda at: [theirs(at, "kerb", "vehicle", stationary=True, box=(0.05, 0.2, 0.2, 0.33))])
+    assert [p for p in out if p["tracks"]] == [] and follow.local.stats["told"] == 0
+
+
+def test_a_car_that_parks_is_left_out_again_and_comes_back_when_it_drives_off():
+    follow = CameraFollow(STAMP, epoch="p2")
+    x = lambda ms: 0.1 + 0.0002 * min(ms, 2000) + 0.0002 * max(0, ms - 12000)  # noqa: E731 - drives in, stands ten seconds, drives on
+    out = play(follow, 14000, lambda ms: {"vehicle": [(x(ms), 0.3, x(ms) + 0.15, 0.42, 0.9)]})
+    told = sorted(frame_ms(p) for p in out if p["tracks"])
+    assert told[0] < 600  # told as it drives in
+    parked = [t for t in told if 7500 < t < 11900]
+    assert not parked  # some seconds after it stopped it is no longer told ...
+    assert [t for t in told if t > 12600]  # ... until it drives off again
+    assert {tr["id"] for p in out for tr in p["tracks"]} == {"Lp2-1"}  # the same track all along
+
+
+def test_a_person_standing_still_stays_told():
+    follow = CameraFollow(STAMP, epoch="p3")
+    out = play(follow, 12000, lambda ms: where(min(ms, 1500)))
+    told = [frame_ms(p) for p in out if p["tracks"]]
+    assert told and max(told) > 11900 and out[-1]["tracks"][0]["moving"] is False

@@ -36,6 +36,7 @@ SMOOTH_SPEED = 0.35
 SETTLED_MS = 4000  # followed this long without going anywhere: it stands there
 PLACE_KEEP_MS = 60_000  # a place something stood is remembered this long after it was last found there
 PLACE_IOU = 0.6  # a box is "in that place" when it overlaps the remembered one this much
+STANDING_KINDS = ("vehicle",)  # what is parked. People and animals stand about, but are never "parked"
 
 
 @dataclass
@@ -121,6 +122,10 @@ class LocalTracker:
                 return
         self.places.append({"kind": kind, "box": box, "seen": when, "by": set() if track is None else {track}})
 
+    def place_of(self, kind: str, box) -> dict | None:
+        """The remembered place a box is in, if something stands there."""
+        return self._place_of(kind, box)
+
     def _place_of(self, kind: str, box) -> dict | None:
         best, most = None, PLACE_IOU
         for place in self.places:
@@ -172,7 +177,7 @@ class LocalTracker:
                     self._next += 1
                     seen_now.append(track)
         for t in seen_now:  # what has stood in one place for a while leaves that place on the list
-            if when - t.born >= SETTLED_MS and not t.moving(SETTLED_MS):
+            if t.kind in STANDING_KINDS and when - t.born >= SETTLED_MS and not t.moving(SETTLED_MS):
                 self.stands(t.kind, t.box, when, t.id)
         self.ended = [t for t in self.tracks.values() if when - t.seen > GONE_MS]
         for track in self.ended:
