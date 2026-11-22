@@ -33,7 +33,7 @@ MATCH_IOU = 0.2  # a box belongs to a track when they overlap at least this much
 NEAR = 0.6  # ... or, failing that, when it is this near (in units of the track's size) and of like size
 SMOOTH_SIZE = 0.5  # how much of a new box's size is taken at once (its edges flicker more than its middle)
 SMOOTH_SPEED = 0.35
-SETTLED_MS = 2000  # followed this long without going anywhere: it stands there
+SETTLED_MS = 4000  # followed this long without going anywhere: it stands there
 PLACE_KEEP_MS = 60_000  # a place something stood is remembered this long after it was last found there
 PLACE_IOU = 0.6  # a box is "in that place" when it overlaps the remembered one this much
 
@@ -109,14 +109,17 @@ class LocalTracker:
         self.places: list[dict] = []  # where things stand: {kind, box, seen}
         self._next = 1
 
-    def stands(self, kind: str, box, when: float) -> None:
-        """Note that something of this kind stands here (seen now)."""
+    def stands(self, kind: str, box, when: float, track: int | None = None) -> None:
+        """Note that something of this kind stands here (seen now). `track`:
+        our own track of the thing standing there, where there is one."""
         box = tuple(box[:4])
         for place in self.places:
             if place["kind"] == kind and iou(place["box"], box) >= PLACE_IOU:
                 place["box"], place["seen"] = box, max(place["seen"], when)
+                if track is not None:
+                    place["by"].add(track)
                 return
-        self.places.append({"kind": kind, "box": box, "seen": when})
+        self.places.append({"kind": kind, "box": box, "seen": when, "by": set() if track is None else {track}})
 
     def _place_of(self, kind: str, box) -> dict | None:
         best, most = None, PLACE_IOU
@@ -141,10 +144,9 @@ class LocalTracker:
             for t in tracks:
                 for j, box in enumerate(boxes):
                     # a box where something stands is that thing's: only for a track that is there itself, and, if it
-                    # is going somewhere, one that started out there (the parked car driving off, not a car passing)
+                    # is going somewhere, one that has stood there (the parked car driving off, not a car passing)
                     if stood[j] is not None:
-                        place = stood[j]["box"]
-                        if iou(t.box, place) < PLACE_IOU or (going[t.id] and iou(t.born_box, place) < PLACE_IOU):
+                        if iou(t.box, stood[j]["box"]) < PLACE_IOU or (going[t.id] and t.id not in stood[j]["by"]):
                             continue
                     overlap = iou(expected[t.id], box)
                     if overlap >= MATCH_IOU:
@@ -158,6 +160,8 @@ class LocalTracker:
                     continue
                 used_t.add(tid)
                 used_b.add(j)
+                if stood[j] is not None and not going[tid]:
+                    stood[j]["by"].add(tid)  # it is the thing standing there
                 self._move(self.tracks[tid], when, boxes[j])
                 seen_now.append(self.tracks[tid])
             for j, box in enumerate(boxes):
@@ -169,7 +173,7 @@ class LocalTracker:
                     seen_now.append(track)
         for t in seen_now:  # what has stood in one place for a while leaves that place on the list
             if when - t.born >= SETTLED_MS and not t.moving(SETTLED_MS):
-                self.stands(t.kind, t.box, when)
+                self.stands(t.kind, t.box, when, t.id)
         self.ended = [t for t in self.tracks.values() if when - t.seen > GONE_MS]
         for track in self.ended:
             del self.tracks[track.id]

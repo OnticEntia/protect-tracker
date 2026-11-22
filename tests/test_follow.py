@@ -283,15 +283,15 @@ def test_the_tracker_remembers_where_things_stand_by_itself():
     another drives over the spot. The passing car's track must not end up on the parked one."""
     tracker = LocalTracker()
     mover_id = None
-    for i in range(240):
+    for i in range(330):
         ms = i * 100 / 3
-        x = -0.6 + 0.0002 * ms  # the passing car comes into view at 3 s
+        x = -1.0 + 0.0002 * ms  # the passing car comes into view at 5 s
         mover = (x, 0.42, x + 0.2, 0.62, 0.9)
         overlap = min(mover[2], PARKED_BOX[2]) - max(mover[0], PARKED_BOX[0])
         boxes = []
         if x > 0 and overlap <= 0.1:
             boxes.append(mover)
-        if ms < 4000 or overlap > 0.1 or ms > 6500:  # found, then not, then found again as the other passes
+        if ms < 6000 or overlap > 0.1 or ms > 8500:  # found, then not, then found again as the other passes
             boxes.append(PARKED_BOX + (0.8,))
         for t in tracker.update(ms, {"vehicle": boxes}):
             if mover_id is None and x > 0.02 and abs(t.box[0] - x) < 0.02:
@@ -299,3 +299,16 @@ def test_the_tracker_remembers_where_things_stand_by_itself():
     assert mover_id is not None and tracker.places
     track = tracker.tracks.get(mover_id)
     assert track is None or abs(track.box[0] - PARKED_BOX[0]) > 0.1, "the passing car's track is sitting on the parked car"
+
+
+def test_a_slow_thing_far_off_is_not_broken_up_by_its_own_place():
+    """A car far off creeps along, stops for five seconds (long enough to count as standing there), and goes
+    on. It is one track throughout: the place it stood in is its own."""
+    tracker = LocalTracker()
+    ids = set()
+    for i in range(450):
+        ms = i * 100 / 3
+        x = 0.3 + 0.00002 * min(ms, 4000) + 0.00002 * max(0, ms - 9000)
+        for t in tracker.update(ms, {"vehicle": [(x, 0.3, x + 0.05, 0.34, 0.8)]}):
+            ids.add(t.id)
+    assert tracker.places and len(ids) == 1
