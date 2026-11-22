@@ -46,6 +46,11 @@ an input only as tall as a 16:9 frame is preferred where there is one (`<models>
 
 ## Installing
 
+Two things are installed, and HACS only does the first: the integration (through HACS), and a container
+with the models that you add yourself next to Home Assistant. Without the container the integration
+does nothing but wait for it. A graphics card is strongly advised; the figures in this README are from
+an 8 GB NVIDIA card.
+
 1. **The service.** It runs next to Home Assistant, as a container: see `service/compose.example.yaml`.
    Put the model files in a `models` folder and mount it at `/models`. It listens on this machine only
    (`127.0.0.1:8791`), has no login of its own, and can do nothing but look at the streams Home Assistant
