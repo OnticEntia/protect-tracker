@@ -173,6 +173,7 @@ class CameraWorker(threading.Thread):
             "far_look_ms": round(fars[len(fars) // 2], 1) if fars else None,
             "lost": self.lost, **self.follow.stats,
             "check": self.check.result(), "head_start": self.follow.head_start(), "local": dict(self.follow.local.stats),
+            "face_boxes": self.follow.local.faces.stats(),
         }
 
 

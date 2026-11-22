@@ -300,3 +300,31 @@ def test_coming_out_from_behind_a_post_as_a_sliver_is_still_them():
     out = play(follow, 7000, scene)
     told = [p for p in out if p["tracks"]]
     assert {tr["id"] for p in told for tr in p["tracks"]} == {"Lpost-1"} and all(len(p["tracks"]) == 1 for p in told)
+
+
+def test_the_face_keeps_up_with_a_walking_person():
+    """Someone walks across at a steady pace; the face detector finds their face in one frame in five. A face
+    box goes out for every frame all the same, and stays on the face: within a quarter of its width."""
+    walk = lambda ms: where(ms, 0.0001)  # noqa: E731 - (slowly enough to stay in the picture throughout)
+    face_of = lambda ms: (walk(ms)[0] + 0.03, 0.31, walk(ms)[0] + 0.07, 0.37)  # noqa: E731
+    def scene(ms: float) -> dict:
+        found = {"person": [walk(ms) + (0.9,)]}
+        if int(ms / STEP + 0.5) % 5 == 0 and ms < 4000:
+            found["face"] = [face_of(ms) + (0.8,)]
+        return found
+
+    follow = CameraFollow(STAMP, epoch="face")
+    out = play(follow, 6500, scene)
+    faces = [(frame_ms(p), tr) for p in out for tr in p["tracks"] if tr["objectType"] == "face"]
+    assert len(faces) > 100
+    worst = 0.0
+    for ms, tr in faces:
+        box = to_box(tr["coord"])
+        worst = max(worst, abs((box[0] + box[2]) / 2 - (face_of(ms)[0] + face_of(ms)[2]) / 2) / 0.04)
+        assert tr["id"] == "Lface-1:face" and tr["of"] == "Lface-1"
+    assert worst < 0.25, f"the face box was {worst:.2f} of a face's width off at worst"
+    held = [tr["held"] for _, tr in faces]
+    assert 0.7 < sum(held) / len(held) < 0.9  # four in five are carried, and say so
+    assert max(ms for ms, _ in faces) < 4000 + 1100  # a second after the last find it is given up
+    stats = follow.local.faces.stats()
+    assert stats["carried_off"] < 0.1 and stats["held_off"] > 0.3  # left where it was found it would have trailed by a good part of its width

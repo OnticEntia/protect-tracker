@@ -87,6 +87,7 @@ def replay(looks, old: bool = False) -> dict[str, Any]:
                 for t in people:
                     row = told.setdefault(t["id"], {"id": t["id"], "first": ms, "first_box": _box(t["coord"]), "frames": 0})
                     row["last"], row["last_box"], row["frames"] = ms, _box(t["coord"]), row["frames"] + 1
+        face_stats = follow.local.faces.stats()
     rows = sorted(told.values(), key=lambda r: r["first"])
     breaks = []
     for i, row in enumerate(rows[1:], 1):
@@ -120,6 +121,7 @@ def replay(looks, old: bool = False) -> dict[str, Any]:
         "breaks": breaks,
         "face_tracks": len(faces),
         "face_frames": sum(faces.values()),
+        "face_boxes": face_stats,
     }
 
 
@@ -195,6 +197,10 @@ def say(result: dict[str, Any], label: str) -> None:
     print(f"-- {label}: {result['frames']} frames, a person found in {result['people_frames']}; "
           f"{len(result['tracks'])} person track(s), {result['most_at_once']} at once at most; "
           f"faces in {result['face_frames']} frames ({result['face_tracks']} face track(s))")
+    f = result["face_boxes"]
+    if f["found"]:
+        print(f"   face boxes: {f['found']} from a find in that frame, {f['carried']} carried along with the person; at a find the carried box was "
+              f"{f['carried_off']} of a face's width off, one left where it was last found would have been {f['held_off']} ({f['compared']} compared)")
     for t in result["tracks"]:
         print(f"   {t['id']:>8}  {clock(t['from'])} to {clock(t['to'])}  ({t['seconds']} s, {t['frames']} frames)")
     for b in result["breaks"]:

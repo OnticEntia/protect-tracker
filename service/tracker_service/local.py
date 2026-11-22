@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .faces import FaceCarry
 from .tracks import Track
 
 # kind -> (how sure the detector must be, the least height as a share of the picture)
@@ -73,6 +74,7 @@ class LocalView:
         self.epoch = epoch  # part of every track id, so ids are not used again after a restart
         self.standing = standing or (lambda kind, box: None)  # is this box where something is known to stand
         self.tracks: dict[int, _Told] = {}
+        self.faces = FaceCarry()  # each person's face, kept with them between the frames it is found in
         self.stats = {"told": 0, "confirmed": 0, "people": 0}
 
     def _of(self, track: Track) -> _Told:
@@ -116,7 +118,9 @@ class LocalView:
     def frame(self, when: float, tracks: dict[int, Track], seen: list[Track], ended: list[Track]) -> list[dict[str, Any]]:
         """The entries to tell for this frame."""
         for t in ended:
-            self.tracks.pop(t.id, None)
+            gone = self.tracks.pop(t.id, None)
+            if gone is not None:
+                self.faces.forget(gone.name)
         seen_ids = {t.id for t in seen}
         entries: list[dict[str, Any]] = []
         people: list[tuple[_Told, tuple]] = []
@@ -146,20 +150,28 @@ class LocalView:
             entries.append(self._entry(t, told, box))
             if t.kind == "person":
                 people.append((told, box))
-        if people:  # the faces of the people told
-            for face in seen:
-                if face.kind != "face":
-                    continue
+        # the faces of the people told: found in this frame, or carried along with their person since the last find
+        faces = [f for f in seen if f.kind == "face"]
+        for told, box in people:
+            face_box, score, held = None, 0.0, False
+            for face in faces:
                 fx, fy = _middle(face.box)
-                for told, box in people:
-                    if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
-                        entries.append({
-                            "id": f"{told.name}:face", "coord": to_coord(face.box), "objectType": "face",
-                            "confidence": int(round(float(face.score) * 100)), "stationary": False, "moving": face.moving(),
-                            "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True,
-                            "confirmed": told.protect is not None, "protectId": None, "eventId": None, "of": told.name,
-                        })
-                        break
+                if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
+                    face_box, score = face.box, float(face.score)
+                    self.faces.find(told.name, box, face.box, when, score)
+                    faces.remove(face)
+                    break
+            if face_box is None:
+                carried = self.faces.carry(told.name, box, when)
+                if carried is None:
+                    continue
+                (face_box, score), held = carried, True
+            entries.append({
+                "id": f"{told.name}:face", "coord": to_coord(face_box), "objectType": "face",
+                "confidence": int(round(score * 100)), "stationary": False, "moving": True,
+                "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True, "held": held,
+                "confirmed": told.protect is not None, "protectId": None, "eventId": None, "of": told.name,
+            })
         return entries
 
     @staticmethod

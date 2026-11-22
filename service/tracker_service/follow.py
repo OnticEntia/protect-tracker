@@ -49,6 +49,7 @@ from typing import Any
 
 from .clock import FeedClock
 from .detect import iou
+from .faces import FaceCarry
 from .local import LocalView
 from .rtp import Unwrap
 from .tracks import FAR_HEIGHT, STANDING_KINDS, LocalTracker, Track
@@ -116,6 +117,7 @@ class CameraFollow:
         self.tracker = LocalTracker()
         self.local = LocalView(epoch, self.tracker.place_of)  # the same tracks, told on our own word (local.py)
         self.local_packets: list[dict[str, Any]] = []  # what the last frame gave for those who asked for that
+        self.faces = FaceCarry()  # (for the faces sent in Protect's name: the same carrying along)
         self._local_off: float | None = None  # what is added to our clock for the local stream's wall clock
         self._local_at = 0.0  # our clock at the last frame (for bringing that to Protect's, gently)
         self._local_sent = 0.0  # ... and when the local stream last said anything
@@ -346,19 +348,27 @@ class CameraFollow:
         # the faces of the people followed, where Protect reports none
         if people:
             bound = {t.local for t in self.theirs.values() if t.local is not None}
-            for face in seen_tracks:
-                if face.kind != "face" or face.id in bound:
-                    continue
-                fx, fy = _middle(face.box)
-                for mine, box in people:
+            faces = [f for f in seen_tracks if f.kind == "face" and f.id not in bound]
+            for mine, box in people:
+                face_box, score, held = None, 0.0, False
+                for face in faces:
+                    fx, fy = _middle(face.box)
                     if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
-                        entries.append({
-                            "id": f"{mine.id}:face", "coord": to_coord(face.box), "objectType": "face",
-                            "confidence": int(round(float(face.score) * 100)), "stationary": mine.stationary, "moving": face.moving(),
-                            "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True, "of": mine.id,
-                        })
-                        self.stats["faces"] += 1
+                        face_box, score = face.box, float(face.score)
+                        self.faces.find(mine.id, box, face.box, when, score)
+                        faces.remove(face)
                         break
+                if face_box is None:  # not found in this frame: carried along with the person since the last find
+                    carried = self.faces.carry(mine.id, box, when)
+                    if carried is None:
+                        continue
+                    (face_box, score), held = carried, True
+                entries.append({
+                    "id": f"{mine.id}:face", "coord": to_coord(face_box), "objectType": "face",
+                    "confidence": int(round(score * 100)), "stationary": mine.stationary, "moving": True,
+                    "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True, "held": held, "of": mine.id,
+                })
+                self.stats["faces"] += 1
         if not entries:
             return []
         self.stats["sent"] += 1
