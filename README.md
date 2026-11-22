@@ -87,8 +87,54 @@ messages are passed on as they are. What is added:
   the face is a track of its own: `id` is `<the person's track id>:face`, `objectType` is `face`, and
   `of` names the person's track. It is the one thing sent that Protect did not report itself.
 
+### `mode: "local"`: on the service's own word
+
+    {"type": "protect_tracker/live/subscribe", "entity": "<camera entity>", "mode": "local"}
+
+Without `mode` (or with `"auto"`) the command is as described above: Protect decides what is there and
+the service refines where. With `"local"` the service is the authority. It tells what it sees as soon
+as it is sure, whether or not Protect has reported anything, and goes on doing so when Protect is
+silent. Nothing of Protect's own is passed on in this mode. Same packets; per track:
+
+| Field | |
+|---|---|
+| `id` | the service's own track id (starts with `L`), the same for the life of the track, not used again after a restart |
+| `confirmed` | `false` while only the service has seen the thing; `true` from the moment Protect reports the same thing, and for the rest of the track |
+| `protectId` | Protect's track id, once confirmed |
+| `objectType`, `confidence` | the service's (person, vehicle, animal, face; 0–100) until confirmed, Protect's after |
+| `desc`, `zones`, `loiterZones`, `lines` | empty until confirmed, then Protect's, kept as last reported |
+| `stationary` | `false` until confirmed, then Protect's word |
+| `moving`, `local` | as above (`local` is always `true`) |
+
+A face is a track of its own here too (`<the person's id>:face`, `of`).
+
+With nobody to veto it, the service only tells a thing that has been found for a quarter of a second,
+surely enough and big enough for its kind, **and has travelled from where it was first found**. What
+only stands there (a parked car, a bike) is never told; a parked car that drives off is told from when
+it moves. Packets are stamped as in the default mode, so a card times them the same way. Before
+Protect has reported anything since the service started, `clockWall` is the service's own estimate
+(`clockStream`, which is what the picture is matched with, is exact from the first packet).
+
+This mode wants "Watch all the time" switched on: otherwise the service only looks once Protect has
+already reported something.
+
 The command answers `not_loaded`, `not_found` or `not_ready` when it cannot serve a camera; a card
 should then use Protect Detections' command as before.
+
+## Entities
+
+| Entity | |
+|---|---|
+| **Person seen** (binary sensor, one per camera, on the camera's device) | On while the service itself sees a person on that camera: as a rule before Protect reports one, and also for people Protect never reports. Attributes: `count`, and `confirmed` (Protect has reported the same person meanwhile). Off a few seconds after the last sight. Needs "Watch all the time". |
+
+Use it as a trigger in your own automations where being early matters more than being certain;
+Protect's own detections remain the certain ones.
+
+## People far off
+
+Five times a second the service also takes a sharper look for people: the picture at twice the
+detector's size, cut into four tiles, each looked at on its own, so someone far away is four times
+the pixels. It costs about as much as five ordinary looks each time. `TRACKER_FAR=0` turns it off.
 
 ## Development
 
