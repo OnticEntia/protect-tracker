@@ -202,3 +202,23 @@ def test_tracker_follows_through_a_crossing():
     assert len(ids) == 2  # no new tracks where they pass each other
     left, right = sorted(ids.values(), key=lambda xs: xs[0])
     assert left[-1] > left[0] and right[-1] < right[0]  # each kept going its own way
+
+
+def test_a_parked_thing_protect_calls_moving_is_not_taken_up():
+    follow = primed()
+    still = lambda ms: (0.5 + 0.001 * ((ms // 33) % 2), 0.5, 0.7, 0.7)  # noqa: E731 - its box trembles, no more
+    out = run(follow, 3000, ours=lambda ms: {"vehicle": [still(ms) + (0.9,)]},
+              protect=lambda at: [theirs(at, "bike", "vehicle", stationary=(at % 1000 != 0), box=still(at))])
+    assert out == [] and follow.stats["bound"] == 0
+
+
+def test_protects_word_and_ours_are_separate():
+    follow = primed()
+    out = run(follow, 2000, protect=lambda at: [theirs(at)])
+    tr = out[-1]["tracks"][0]
+    assert tr["stationary"] is False and tr["moving"] is True
+    # it stops; Protect has not said stationary yet: still followed, and we say it is not moving
+    halt = lambda ms: where(min(ms, 2000))  # noqa: E731
+    out = run(follow, 4000, start=2000, ours=halt, protect=lambda at: [theirs(at, box=halt(at))])
+    tr = out[-1]["tracks"][0]
+    assert tr["stationary"] is False and tr["moving"] is False

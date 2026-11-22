@@ -46,6 +46,19 @@ class Track:
         b = self.box
         return (b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy)
 
+    def moving(self, within_ms: float = 1000.0, least: float = 0.01) -> bool:
+        """Has its middle gone anywhere of late (a hundredth of the picture
+        within the last second, as it stands)? A parked thing's box only
+        trembles."""
+        hist = self.history
+        if len(hist) < 2:
+            return False
+        newest_t, newest = hist[-1]
+        for t, box in hist:
+            if t >= newest_t - within_ms:
+                return abs((box[0] + box[2]) - (newest[0] + newest[2])) / 2 + abs((box[1] + box[3]) - (newest[1] + newest[3])) / 2 >= least
+        return False
+
     def at(self, when: float, slack: float = 45.0) -> tuple | None:
         """Its box at a past moment (between two frames: in between); None
         when it wasn't being followed then."""

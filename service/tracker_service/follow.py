@@ -14,7 +14,13 @@ from then on its box in each new frame is sent under Protect's id. When the
 two stop agreeing for a few reports in a row the binding is dropped, and the
 cards are back to Protect's own boxes until one fits again. The same when the
 local track is lost. Things Protect calls stationary are left to Protect: its
-box of a parked car is steadier than a fresh guess thirty times a second.
+box of a parked car is steadier than a fresh guess thirty times a second. And
+a local track is only bound while it is itself going somewhere, so a parked
+thing Protect calls moving for one report is not taken up either.
+
+Protect's `stationary` is passed on as Protect said it. What our own tracker
+sees is a field of its own, `moving`: has the thing's middle gone anywhere in
+the last second.
 
 One thing is added to what Protect reports: the face of a person being
 followed, where the face detector finds one and Protect reports no face
@@ -184,7 +190,7 @@ class CameraFollow:
             if mine.local is not None or mine.kind is None or mine.stationary:
                 continue
             for local in self.tracker.tracks.values():
-                if local.kind != mine.kind or local.id in taken:
+                if local.kind != mine.kind or local.id in taken or not local.moving():
                     continue
                 ours = local.at(frame_time)
                 if ours is not None:
@@ -206,7 +212,7 @@ class CameraFollow:
             start = max(frame_time, mine.sent)
             for when, box in local.history:
                 if when > start:
-                    out.append(self._packet(when, [self._entry(mine, box)]))
+                    out.append(self._packet(when, [self._entry(mine, box, True)]))
                     mine.sent = when
         self.stats["sent"] += len(out)
         return out
@@ -277,7 +283,7 @@ class CameraFollow:
                 box = local.expected(when)
             else:
                 continue
-            entries.append(self._entry(mine, box))
+            entries.append(self._entry(mine, box, local.moving()))
             ours[mine.id] = tuple(box)
             mine.sent = when
             if mine.kind == "person":
@@ -293,8 +299,8 @@ class CameraFollow:
                     if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
                         entries.append({
                             "id": f"{mine.id}:face", "coord": to_coord(face.box), "objectType": "face",
-                            "confidence": round(face.score * 100), "stationary": False, "zones": [], "loiterZones": [],
-                            "lines": [], "desc": "", "local": True, "of": mine.id,
+                            "confidence": round(face.score * 100), "stationary": mine.stationary, "moving": face.moving(),
+                            "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True, "of": mine.id,
                         })
                         self.stats["faces"] += 1
                         break
@@ -326,8 +332,9 @@ class CameraFollow:
 
     # ------------------------------------------------------------- packets
 
-    def _entry(self, mine: _Theirs, box) -> dict[str, Any]:
-        return {"id": mine.id, "coord": to_coord(box), **mine.meta, "stationary": False, "local": True}
+    def _entry(self, mine: _Theirs, box, moving: bool) -> dict[str, Any]:
+        # `stationary` is Protect's word, as it last said it; `moving` is what we see ourselves
+        return {"id": mine.id, "coord": to_coord(box), **mine.meta, "stationary": mine.stationary, "moving": moving, "local": True}
 
     def _packet(self, when: float, tracks: list[dict[str, Any]]) -> dict[str, Any]:
         wall = when + (self.shift or 0.0) - self.stamp  # as Protect would have stamped these boxes
