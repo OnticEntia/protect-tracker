@@ -112,3 +112,15 @@ def test_two_cameras_keep_every_frame_and_share_the_sharp_look():
         assert low >= 29 and pace.shed["frames"] == 0 and pace.shed["faces"] == 0
     # (two sharp looks do not fit in one frame's time: the ordinary look stands in where they do not)
     assert any(pace.shed["far"] > 0 for _, pace, _ in results)
+
+
+def test_the_burst_when_a_stream_opens_is_caught_up_with_and_not_counted():
+    pace = Pace()
+    looked = 0
+    for i in range(45):  # a second and a half of frames in hand, all at once: each is later than the one before
+        plan = pace.plan(1.5 - i / 30 + i * 0.008, True, 50.0 + i * 0.008)
+        looked += plan["look"]
+    assert looked < 20 and pace.shed == {"far": 0, "faces": 0, "frames": 0, "idle": 0}
+    for i in range(300):  # and from then on every frame, on time
+        assert pace.plan(0.005, True, 51.0 + i / 30)["look"]
+    assert pace.shed == {"far": 0, "faces": 0, "frames": 0, "idle": 0} and pace.state(61.0)["fps"] >= 29

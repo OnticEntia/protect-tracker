@@ -37,6 +37,8 @@ LATE_FACES = 0.20  # ... and no faces
 LATE_SKIP = 0.30  # ... and may be let go unlooked (while the rate is above the floor)
 LATE_MUST = 1.0  # ... and must be: catching up comes first
 WINDOW = 2.0  # seconds the rates are taken over
+SETTLE = 3.0  # a stream that has just been opened first sends what it had in hand, all at once: what is left
+# out of those frames is how catching up is done, not a sign of anything, and is not counted
 
 
 class Pace:
@@ -81,21 +83,22 @@ class Pace:
         # (would letting this one go leave the last second's looks under the floor?)
         last_second = sum(1 for t in self._looked if t > now - 1.0)
         room = last_second + 1 > self.min_fps and now - self.started >= 1.0
-        if late > LATE_MUST or (late > LATE_SKIP and room):
-            self.shed["frames"] += 1
+        counted = now - self.started >= SETTLE
+        if late > LATE_MUST or (late > LATE_SKIP and room) or (not counted and late > LATE_SKIP):
+            self.shed["frames"] += counted
             return {"look": False, "far": False, "faces": False}
         if not busy and self.idle_every > 1:
             every = min(self.idle_every, max(1, int(self.stream_fps(now) // self.min_fps)))
             if every > 1 and self._count % every:
-                self.shed["idle"] += 1
+                self.shed["idle"] += counted
                 return {"look": False, "far": False, "faces": False}
         far_due = self._count % self.far_every == 0
         far = far_due and late <= LATE_FAR and (rate >= self.min_fps or now - self.started < 1.0)
         faces = late <= LATE_FACES
         if far_due and not far:
-            self.shed["far"] += 1
+            self.shed["far"] += counted
         if not faces:
-            self.shed["faces"] += 1
+            self.shed["faces"] += counted
         self._looked.append(now)
         return {"look": True, "far": far, "faces": faces}
 
