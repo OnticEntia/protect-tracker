@@ -1,0 +1,37 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Protect Tracker",
+        "description": "Follows what UniFi Protect reports, frame by frame, with a model running on this machine. The tracking service must be running; this is where Home Assistant reaches it.",
+        "data": {
+          "url": "Tracking service address",
+          "stream": "Camera stream to follow"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Already set up.",
+      "already_configured": "Already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Protect Tracker",
+        "data": {
+          "url": "Tracking service address",
+          "stream": "Camera stream to follow"
+        }
+      }
+    }
+  },
+  "selector": {
+    "stream": {
+      "options": {
+        "medium": "Medium (lighter)",
+        "high": "High (sharpest)"
+      }
+    }
+  }
+}

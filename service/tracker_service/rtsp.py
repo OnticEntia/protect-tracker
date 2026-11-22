@@ -16,7 +16,7 @@ import base64
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 import ssl
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .rtp import RtpPacket, parse_rtp
 
@@ -78,6 +78,15 @@ def parse_sdp(sdp: str) -> VideoTrack | None:
     return track if track is not None and track.payload_type is not None else None
 
 
+def plain(url: str) -> str:
+    """A console's stream address asks for encrypted RTP (?enableSrtp), which
+    is for players that take RTP on its own. Here RTP comes inside the one
+    (TLS) connection, so that is left out."""
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() != "enablesrtp"]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+
+
 def _without_userinfo(url: str) -> tuple[str, str | None]:
     parts = urlsplit(url)
     host = parts.hostname or ""
@@ -97,6 +106,7 @@ class RtspReader:
         parts = urlsplit(url)
         if parts.scheme not in ("rtsp", "rtsps") or not parts.hostname:
             raise RtspError("not an RTSP address")
+        url = plain(url)
         self._url, self._auth = _without_userinfo(url)
         self._host = parts.hostname
         self._tls = parts.scheme == "rtsps"

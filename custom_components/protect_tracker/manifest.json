@@ -1,0 +1,15 @@
+{
+  "domain": "protect_tracker",
+  "name": "Protect Tracker",
+  "after_dependencies": ["protect_detections"],
+  "codeowners": ["@OnticEntia"],
+  "config_flow": true,
+  "dependencies": ["camera", "unifiprotect", "websocket_api"],
+  "documentation": "https://github.com/OnticEntia/protect-tracker",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/OnticEntia/protect-tracker/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

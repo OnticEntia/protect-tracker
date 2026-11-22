@@ -1,20 +1,17 @@
 """Stage 0: do our own boxes line up with Protect's, and at what timing?
 
-Reads one camera's video with its raw RTP timestamps, runs the detectors on
-every frame, and listens to Protect's live reports for the same camera through
-Home Assistant. Afterwards each of Protect's boxes (of things on the move) is
-compared with ours in the frames round it, for a range of "the frame is this
-much earlier than the report's stamp", and the timing where they overlap best
-is printed, by kind.
+Stands in for the tracking service: Home Assistant's Protect Tracker
+integration connects to it, tells it which camera to watch (with the stream
+address) and passes Protect's live reports on. The camera's video is read
+with its raw RTP timestamps and the detectors run on every frame. Afterwards
+each of Protect's boxes (of things on the move) is compared with ours in the
+frames round it, for a range of "our frame's stamp minus the report's", and
+the timing where they overlap best is printed, by kind.
 
-    HA_URL=... HA_TOKEN=... python -m tools.spike --seconds 600
+    python -m tools.spike --models <folder> --seconds 600 --save run.json
 
-(or --env-file a file holding those two lines). The camera is chosen by
---camera (a number from the list it prints, or an entity id); the video is
-taken from Home Assistant's own stream relay by default (--video for another
-RTSP address). Nothing is written to Protect, and no address is printed.
-
---save keeps the boxes and timings (no pictures) so analyse() can be run again.
+Nothing is written to Protect; no address is printed or saved. --save keeps
+the boxes and timings (no pictures), so --load can analyse them again.
 """
 
 from __future__ import annotations
@@ -25,19 +22,20 @@ import json
 import os
 from pathlib import Path
 import queue
+import signal
 import sys
 import threading
 import time
 
-import aiohttp
+from aiohttp import WSMsgType, web
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tracker_service.clock import RTP_WRAP_MS  # noqa: E402
 from tracker_service.detect import Detector, FaceDetector, find_faces, iou  # noqa: E402
-from tracker_service.rtp import Depacketizer  # noqa: E402
-from tracker_service.rtsp import RtspReader  # noqa: E402
+from tracker_service.rtp import Depacketizer, Unwrap  # noqa: E402
+from tracker_service.rtsp import RtspError, RtspReader, VideoTrack  # noqa: E402
 from tracker_service.video import Decoder  # noqa: E402
 
 STEPS = list(range(-800, 601, 25))  # ms tried: our frame's stamp minus the report's
@@ -47,100 +45,31 @@ def now_ms() -> float:
     return time.time() * 1000
 
 
-def read_env(path: str | None) -> tuple[str, str]:
-    env = dict(os.environ)
-    if path:
-        for line in Path(path).read_text().splitlines():
-            key, sep, value = line.partition("=")
-            if sep and not key.strip().startswith("#"):
-                env[key.strip()] = value.strip().strip("'\"")
-    url, token = env.get("HA_URL"), env.get("HA_TOKEN")
-    if not url or not token:
-        raise SystemExit("HA_URL and HA_TOKEN are needed (environment or --env-file)")
-    return url.rstrip("/"), token
-
-
-class Ha:
-    """Just enough of Home Assistant's websocket."""
-
-    def __init__(self, ws) -> None:
-        self.ws = ws
-        self.n = 0
-
-    @classmethod
-    async def connect(cls, session, url: str, token: str) -> Ha:
-        ws = await session.ws_connect(url.replace("http", "ws", 1) + "/api/websocket", max_msg_size=0)
-        await ws.receive_json()
-        await ws.send_json({"type": "auth", "access_token": token})
-        if (await ws.receive_json()).get("type") != "auth_ok":
-            raise SystemExit("Home Assistant refused the token")
-        return cls(ws)
-
-    async def call(self, **msg):
-        self.n += 1
-        await self.ws.send_json({"id": self.n, **msg})
-        while True:
-            reply = await self.ws.receive_json()
-            if reply.get("id") == self.n and reply.get("type") == "result":
-                if not reply.get("success"):
-                    raise SystemExit(f"{msg['type']}: {(reply.get('error') or {}).get('message')}")
-                return reply.get("result")
-
-
-OFFER = "\r\n".join([
-    "v=0", "o=- 4611731400430051336 2 IN IP4 127.0.0.1", "s=-", "t=0 0", "a=group:BUNDLE 0", "a=msid-semantic: WMS",
-    "m=video 9 UDP/TLS/RTP/SAVPF 96 97", "c=IN IP4 0.0.0.0", "a=rtcp:9 IN IP4 0.0.0.0", "a=ice-ufrag:spke",
-    "a=ice-pwd:spikespikespikespikespike", "a=ice-options:trickle",
-    "a=fingerprint:sha-256 " + ":".join(["AB"] * 32), "a=setup:actpass", "a=mid:0", "a=recvonly", "a=rtcp-mux",
-    "a=rtpmap:96 H264/90000", "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
-    "a=rtpmap:97 H265/90000", "",
-])
-
-
-async def wake_relay(ha: Ha, entity: str) -> None:
-    """Home Assistant's stream relay only knows a camera once a live view of
-    it has been asked for. This asks, as a browser would, and never connects:
-    the relay then has the stream under the entity's id."""
-    ha.n += 1
-    mine = ha.n
-    await ha.ws.send_json({"id": mine, "type": "camera/webrtc/offer", "entity_id": entity, "offer": OFFER})
-    end = time.monotonic() + 15
-    while time.monotonic() < end:
-        try:
-            reply = await asyncio.wait_for(ha.ws.receive_json(), 15)
-        except asyncio.TimeoutError:
-            break
-        if reply.get("id") != mine:
-            continue
-        if reply.get("type") == "result" and not reply.get("success"):
-            raise SystemExit(f"live view refused: {(reply.get('error') or {}).get('message')}")
-        kind = (reply.get("event") or {}).get("type")
-        if kind in ("answer", "error"):
-            break
-    await ha.call(type="unsubscribe_events", subscription=mine)
-
-
 class Looker(threading.Thread):
-    """Decodes and detects, off the event loop. Newest pictures win: when it
-    falls behind, the oldest waiting ones are dropped (and counted)."""
+    """Decodes and detects, off the event loop. When it falls behind, the
+    pictures that don't fit in the queue are dropped (and counted)."""
 
-    def __init__(self, models: Path, model: str, track, faces: bool) -> None:
+    def __init__(self, models: Path, model: str, faces: bool) -> None:
         super().__init__(daemon=True)
         self.units: queue.Queue = queue.Queue(maxsize=120)
-        self.frames: list[dict] = []  # {rtp, at (ours, ms, when its last packet came), boxes: {kind: [..]}}
+        self.frames: list[dict] = []  # {rtp, at (ours, ms, when its last packet came), done, boxes: {kind: [..]}}
         self.dropped = 0
         self.times = {"decode": [], "detect": [], "face": []}
         self.size = None
+        self.codec = None
         self.detector = Detector(models / f"yolox_{model}.onnx")
         face_model = models / "face_yunet.onnx"
         self.face = FaceDetector(face_model) if faces and face_model.exists() else None
-        self.decoder = Decoder(track.codec, track.parameter_sets)
+        self.decoder = None
 
     def run(self) -> None:
         while True:
             item = self.units.get()
             if item is None:
                 return
+            if isinstance(item, VideoTrack):  # a stream has just been opened
+                self.decoder, self.codec = Decoder(item.codec, item.parameter_sets), item.codec
+                continue
             unit, at = item
             t0 = time.perf_counter()
             decoded = self.decoder.decode(unit)
@@ -158,66 +87,110 @@ class Looker(threading.Thread):
                 self.frames.append({"rtp": rtp, "at": at, "done": now_ms(), "boxes": boxes})
 
 
-async def watch(args) -> dict:
-    url, token = read_env(args.env_file)
-    async with aiohttp.ClientSession() as session:
-        ha = await Ha.connect(session, url, token)
-        cameras = sorted(((await ha.call(type="protect_detections/live/cameras")) or {}).get("cameras") or {})
-        if not cameras:
-            raise SystemExit("No camera with live tracking")
-        if args.camera is None or (args.camera.isdigit() and int(args.camera) >= len(cameras)):
-            for i, entity in enumerate(cameras):
-                print(f"  {i}: {entity}")
-            raise SystemExit("Pick one with --camera")
-        entity = cameras[int(args.camera)] if args.camera.isdigit() else args.camera
-        video = args.video or f"rtsp://127.0.0.1:18554/{entity}"
-        if not args.video:
-            await wake_relay(ha, entity)
+class Camera:
+    """What was gathered for one camera: Protect's reports, and our frames."""
 
-        reports: list[dict] = []
-        async with RtspReader(video) as reader:
-            track = reader.track
-            looker = Looker(Path(args.models), args.model, track, not args.no_faces)
-            looker.start()
-            print(f"video: {track.codec}; detector yolox_{args.model} on {looker.detector.device}"
-                  f"{' (fast copy)' if looker.detector.fast else ''}; faces {'on' if looker.face else 'off'}", flush=True)
-            await ha.call(type="protect_detections/live/subscribe", entity=entity)
-            stop = time.monotonic() + args.seconds
+    def __init__(self, args) -> None:
+        self.looker = Looker(Path(args.models), args.model, not args.no_faces)
+        self.looker.start()
+        self.reports: list[dict] = []
+        self.task: asyncio.Task | None = None
+        self.opened = 0
+        self.channel = None
+        self.error = None
 
-            async def feed() -> None:
-                async for msg in ha.ws:
-                    if msg.type != aiohttp.WSMsgType.TEXT:
-                        break
-                    event = json.loads(msg.data).get("event")
-                    if isinstance(event, dict) and event.get("clockStream") is not None:
-                        event["got"] = now_ms()
-                        reports.append(event)
-
-            feeding = asyncio.create_task(feed())
-            depack = Depacketizer(track.codec)
-            said = time.monotonic()
-            try:
+    async def read(self, source: str) -> None:
+        depack = None
+        try:
+            async with RtspReader(source) as reader:
+                self.opened += 1
+                self.looker.units.put(reader.track)
+                depack = Depacketizer(reader.track.codec)
                 async for packet in reader.packets():
                     for unit in depack.push(packet):
                         try:
-                            looker.units.put_nowait((unit, now_ms()))
+                            self.looker.units.put_nowait((unit, now_ms()))
                         except queue.Full:
-                            looker.dropped += 1
-                    if time.monotonic() > stop:
-                        break
-                    if time.monotonic() - said > 30:
-                        said = time.monotonic()
-                        moving = sum(1 for r in reports for t in r["tracks"] if not t.get("stationary"))
-                        print(f"  {len(looker.frames)} frames, {len(reports)} reports ({moving} moving boxes), {looker.dropped} dropped", flush=True)
-            finally:
-                feeding.cancel()
-                looker.units.put(None)
-                looker.join(timeout=10)
-    return {
-        "codec": track.codec, "size": looker.size, "model": args.model, "device": looker.detector.device,
-        "dropped": looker.dropped, "frames": looker.frames, "reports": reports,
-        "times": {k: [round(v * 1000, 2) for v in vals] for k, vals in looker.times.items()},
-    }
+                            self.looker.dropped += 1
+        except RtspError as err:
+            self.error = str(err)
+            print(f"  video: {err}", flush=True)
+
+    def data(self, args) -> dict:
+        look = self.looker
+        return {
+            "codec": look.codec, "size": look.size, "channel": self.channel, "model": args.model, "device": look.detector.device,
+            "dropped": look.dropped, "opened": self.opened, "frames": list(look.frames), "reports": list(self.reports),
+            "times": {k: [round(v * 1000, 2) for v in vals] for k, vals in look.times.items()},
+        }
+
+
+async def watch(args) -> dict:
+    """Wait for Home Assistant's Protect Tracker integration to connect, and
+    gather what it sends and what the cameras show, for --seconds from the
+    first camera it tells us to watch."""
+    cameras: dict[str, Camera] = {}
+    started: list[float] = []
+
+    async def link(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=0)
+        await ws.prepare(request)
+        print("Home Assistant connected", flush=True)
+        await ws.send_json({"type": "status", "mode": "measuring"})
+        async for msg in ws:
+            if msg.type != WSMsgType.TEXT:
+                break
+            data = json.loads(msg.data)
+            cam = data.get("camera")
+            if data.get("type") == "watch":
+                camera = cameras.get(cam) or cameras.setdefault(cam, Camera(args))
+                camera.channel = data.get("channel")
+                if camera.task is None or camera.task.done():
+                    camera.task = asyncio.create_task(camera.read(data["source"]))
+                    started or started.append(time.monotonic())
+                    print(f"  watching camera {list(cameras).index(cam)} (stream {camera.channel})", flush=True)
+            elif data.get("type") == "sleep" and cam in cameras:
+                if cameras[cam].task:
+                    cameras[cam].task.cancel()
+                print(f"  camera {list(cameras).index(cam)} sleeps", flush=True)
+            elif data.get("type") == "report" and cam in cameras:
+                packet = data.get("packet") or {}
+                if packet.get("clockStream") is not None:
+                    packet["got"] = now_ms()
+                    cameras[cam].reports.append(packet)
+        print("Home Assistant disconnected", flush=True)
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/link", link)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, args.host, args.port).start()
+    print(f"waiting for Home Assistant on {args.host}:{args.port}", flush=True)
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stopping.set)
+    said = time.monotonic()
+    while not stopping.is_set() and not (started and time.monotonic() - started[0] > args.seconds):
+        try:
+            await asyncio.wait_for(stopping.wait(), 1)
+        except asyncio.TimeoutError:
+            pass
+        if time.monotonic() - said > 60:
+            said = time.monotonic()
+            for i, camera in enumerate(cameras.values()):
+                moving = sum(1 for r in camera.reports for t in r["tracks"] if not t.get("stationary"))
+                print(f"  camera {i}: {len(camera.looker.frames)} frames, {len(camera.reports)} reports ({moving} moving boxes), {camera.looker.dropped} dropped", flush=True)
+            if args.save:
+                Path(args.save).write_text(json.dumps({"cameras": [c.data(args) for c in cameras.values()]}))
+    for camera in cameras.values():
+        if camera.task:
+            camera.task.cancel()
+        camera.looker.units.put(None)
+        camera.looker.join(timeout=10)
+    await runner.cleanup()
+    return {"cameras": [c.data(args) for c in cameras.values()]}
 
 
 def stream_ms(report: dict) -> float:
@@ -230,7 +203,8 @@ def analyse(data: dict, out=print) -> dict:
     if len(frames) < 2:
         out("no frames")
         return result
-    rtp = np.array([f["rtp"] for f in frames], dtype=np.float64) * 1000.0 / 90000.0
+    count_on = Unwrap()  # the 32-bit timestamps may start over during the run
+    rtp = np.array([count_on(f["rtp"]) for f in frames], dtype=np.float64) * 1000.0 / 90000.0
     at = np.array([f["at"] for f in frames])
     span = (at[-1] - at[0]) / 1000
     result["fps"] = round((len(frames) - 1) / span, 2) if span > 0 else None
@@ -330,12 +304,11 @@ def args_min_shift(box) -> float:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--env-file")
-    ap.add_argument("--camera")
-    ap.add_argument("--video", help="an RTSP address instead of Home Assistant's relay")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--models", default=os.environ.get("TRACKER_MODELS", "models"))
     ap.add_argument("--model", default="m")
-    ap.add_argument("--seconds", type=int, default=300)
+    ap.add_argument("--seconds", type=int, default=600)
     ap.add_argument("--no-faces", action="store_true")
     ap.add_argument("--save")
     ap.add_argument("--load", help="analyse a file kept with --save")
@@ -346,7 +319,9 @@ def main() -> None:
         data = asyncio.run(watch(args))
         if args.save:
             Path(args.save).write_text(json.dumps(data))
-    analyse(data)
+    for i, camera in enumerate(data["cameras"]):
+        print(f"== camera {i}, stream {camera.get('channel')}, {camera.get('codec')}, yolox_{camera.get('model')} on {camera.get('device')}, video opened {camera.get('opened')} times")
+        analyse(camera)
 
 
 if __name__ == "__main__":
