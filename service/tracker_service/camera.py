@@ -18,8 +18,10 @@ import threading
 import time
 from typing import Any
 
+import numpy as np
+
 from .check import H as CHECK_H, W as CHECK_W, PictureCheck
-from .detect import Detector, FaceDetector, find_faces
+from .detect import Detector, FaceDetector, find_faces, iou
 from .follow import CameraFollow
 from .rtp import Depacketizer
 from .rtsp import RtspError, RtspReader, VideoTrack
@@ -29,6 +31,9 @@ log = logging.getLogger(__name__)
 
 BEHIND = 4  # pictures waiting beyond which a frame is decoded but not looked at (to catch up)
 IDLE_EVERY = 6  # while nothing moves, one frame in this many is looked at (five a second of thirty)
+FAR_EVERY = 6  # one frame in this many also gets the sharper look for people far off
+FAR_SIZE = (1280, 720)  # the picture that look is made on, cut into four tiles of the detector's own size
+FAR_CONF = 0.6  # what a sighting in a tile needs (a tile shows less of the scene to judge by)
 WAITING = 600  # pictures and reports that may wait at most
 
 
@@ -43,27 +48,54 @@ def _base36(n: int) -> str:
 class Engine:
     """The models, shared by the cameras (one look at a time)."""
 
-    def __init__(self, models: Path, model: str = "m", faces: bool = True, min_conf: float = 0.3, face_conf: float = 0.6) -> None:
+    def __init__(self, models: Path, model: str = "m", faces: bool = True, min_conf: float = 0.3, face_conf: float = 0.6, far: bool = True) -> None:
         self.detector = Detector(Path(models) / f"yolox_{model}.onnx")
         face_model = Path(models) / "face_yunet.onnx"
         self.face = FaceDetector(face_model) if faces and face_model.exists() else None
         self.model = model
         self.min_conf, self.face_conf = min_conf, face_conf
         self.size = (self.detector.w, self.detector.h)
+        self.far = far and self.size == (FAR_SIZE[0] // 2, FAR_SIZE[1] // 2)  # the tiles must be the detector's size
         self._lock = threading.Lock()
 
     @property
     def device(self) -> str:
         return self.detector.device
 
-    def look(self, frame) -> dict[str, list]:
-        """What is in a decoded frame: {kind: [(x1, y1, x2, y2, score)]}."""
+    def look(self, frame, far: bool = False) -> dict[str, list]:
+        """What is in a decoded frame: {kind: [(x1, y1, x2, y2, score)]}.
+        `far`: also the sharper look for people far off (far_people)."""
         small = picture(frame, *self.size)
         with self._lock:
             found = self.detector.detect(small, self.min_conf, ("person", "vehicle", "animal"))
+            if far and self.far:
+                found["person"] = merge_far(found["person"], self.far_people(frame))
             if self.face is not None and found["person"]:
                 found["face"] = find_faces(self.face, picture(frame), found["person"], self.face_conf)
         return found
+
+    def far_people(self, frame) -> list:
+        """People far off: the picture at twice the detector's size, cut into
+        four tiles, each looked at on its own, so someone far away is four
+        times the pixels they are in the whole-picture look."""
+        big = picture(frame, *FAR_SIZE)
+        w, h = self.size
+        out = []
+        for ty in (0, h):
+            for tx in (0, w):
+                tile = np.ascontiguousarray(big[ty : ty + h, tx : tx + w])
+                for x1, y1, x2, y2, score in self.detector.detect(tile, FAR_CONF, ("person",))["person"]:
+                    out.append(((tx + x1 * w) / FAR_SIZE[0], (ty + y1 * h) / FAR_SIZE[1], (tx + x2 * w) / FAR_SIZE[0], (ty + y2 * h) / FAR_SIZE[1], score))
+        return out
+
+
+def merge_far(people: list, far: list) -> list:
+    """The whole-picture look's people, and those only the sharper look found."""
+    out = list(people)
+    for box in far:
+        if all(iou(box, other) < 0.3 for other in out):
+            out.append(box)
+    return out
 
 
 class CameraWorker(threading.Thread):
@@ -82,6 +114,7 @@ class CameraWorker(threading.Thread):
         self.lost = 0
         self._count = 0
         self.look_ms: deque = deque(maxlen=300)
+        self.far_ms: deque = deque(maxlen=300)  # the looks that include the sharper one for people far off
         self.frame_times: deque = deque(maxlen=300)
 
     def put(self, item) -> bool:
@@ -131,9 +164,10 @@ class CameraWorker(threading.Thread):
             if self._count % IDLE_EVERY and not self.follow.busy():
                 self.idle_skipped += 1  # nothing moves: a look now and then is enough to notice when something does
                 continue
+            far = self._count % FAR_EVERY == 0
             started = time.perf_counter()
-            found = self.engine.look(frame)
-            self.look_ms.append((time.perf_counter() - started) * 1000)
+            found = self.engine.look(frame, far)
+            (self.far_ms if far else self.look_ms).append((time.perf_counter() - started) * 1000)
             self.frame_times.append(time.monotonic())
             self.follow.last_frame = None
             for packet in self.follow.frame(rtp, found, at):
@@ -148,9 +182,10 @@ class CameraWorker(threading.Thread):
         times = list(self.frame_times)
         recent = [t for t in times if times and t > times[-1] - 5]
         fps = (len(recent) - 1) / (recent[-1] - recent[0]) if len(recent) > 1 and recent[-1] > recent[0] else 0.0
-        looks = sorted(self.look_ms)
+        looks, fars = sorted(self.look_ms), sorted(self.far_ms)
         return {
             "codec": self.codec, "fps": round(fps, 1), "look_ms": round(looks[len(looks) // 2], 1) if looks else None,
+            "far_look_ms": round(fars[len(fars) // 2], 1) if fars else None,
             "skipped": self.skipped, "idle_skipped": self.idle_skipped, "lost": self.lost, **self.follow.stats,
             "check": self.check.result(), "head_start": self.follow.head_start(), "local": dict(self.follow.local.stats),
         }

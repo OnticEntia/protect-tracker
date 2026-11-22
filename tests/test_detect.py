@@ -40,3 +40,27 @@ def test_resize_keeps_things_where_they_are():
 def test_iou():
     assert iou((0, 0, 1, 1), (0, 0, 1, 1)) == 1 and iou((0, 0, 1, 1), (2, 2, 3, 3)) == 0
     assert abs(iou((0, 0, 2, 2), (1, 0, 3, 2)) - 1 / 3) < 1e-9
+
+
+def test_far_look_tiles_map_back_to_the_whole_picture():
+    from tracker_service.camera import Engine, merge_far
+
+    class OneBox:
+        """A detector that finds a person in the middle of whatever it is shown."""
+
+        def detect(self, tile, min_conf, kinds):
+            assert tile.shape == (360, 640, 3) and min_conf == 0.6
+            return {"person": [(0.4, 0.4, 0.6, 0.6, 0.9)]}
+
+    engine = Engine.__new__(Engine)
+    engine.detector, engine.size = OneBox(), (640, 360)
+
+    class Frame:
+        def to_ndarray(self, format, width, height):  # noqa: A002
+            return np.zeros((height, width, 3), np.uint8)
+
+    boxes = engine.far_people(Frame())
+    assert len(boxes) == 4
+    assert np.allclose(boxes[0][:4], (0.2, 0.2, 0.3, 0.3)) and np.allclose(boxes[3][:4], (0.7, 0.7, 0.8, 0.8))
+    merged = merge_far([(0.19, 0.19, 0.31, 0.31, 0.8)], boxes)  # the first is one the whole-picture look had already
+    assert len(merged) == 4 and merged[0][4] == 0.8

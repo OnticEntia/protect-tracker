@@ -90,7 +90,7 @@ def test_a_parked_car_that_drives_off_is_told_from_when_it_moves():
 
 def test_too_small_or_too_unsure_is_not_told():
     follow = CameraFollow(STAMP, epoch="t6")
-    tiny = lambda ms: {"person": [(0.1 + 0.0002 * ms, 0.5, 0.11 + 0.0002 * ms, 0.53, 0.9)]}  # noqa: E731
+    tiny = lambda ms: {"person": [(0.1 + 0.0002 * ms, 0.5, 0.11 + 0.0002 * ms, 0.52, 0.9)]}  # noqa: E731
     unsure = lambda ms: {"person": [where(ms) + (0.35,)]}  # noqa: E731
     assert play(follow, 2000, tiny) == []
     assert play(CameraFollow(STAMP, epoch="t7"), 2000, unsure) == []

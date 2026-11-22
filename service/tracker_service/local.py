@@ -28,7 +28,8 @@ from typing import Any
 from .tracks import Track
 
 # kind -> (how sure the detector must be, the least height as a share of the picture)
-SURE = {"person": (0.45, 0.05), "vehicle": (0.5, 0.04), "animal": (0.5, 0.04)}
+# (a person far off is small: the sharper look finds them from about a fortieth of the picture's height)
+SURE = {"person": (0.45, 0.025), "vehicle": (0.5, 0.04), "animal": (0.5, 0.04)}
 PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)

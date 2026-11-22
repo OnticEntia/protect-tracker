@@ -21,7 +21,7 @@ class SquareFinder:
 
     device, model, face = "test", "square", None
 
-    def look(self, frame) -> dict:
+    def look(self, frame, far: bool = False) -> dict:
         img = picture(frame)
         cols = np.where(img[120, :, 1] > 128)[0]
         if not len(cols):
