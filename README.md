@@ -73,8 +73,12 @@ messages are passed on as they are. What is added:
   id and with Protect's details; while those are fresh, Protect's own box for that id is left out of what
   is passed on. When the service loses the thing, Protect's box comes back after a moment. Things the
   service does not follow (parked cars, kinds it has no model for) are Protect's throughout.
-- **`stationary`** is Protect's word, passed on as Protect said it. What the service sees itself is a
-  field of its own on its tracks, **`moving`**: has the thing's middle gone anywhere in the last second.
+- **`stationary`** is Protect's word, passed on as Protect said it, on every track.
+- **`moving`** is the service's own view, and is only on its own tracks (`local: true`; a track of
+  Protect's passed on has no such field). It is `true` when the middle of the thing's box, as the
+  service found it, is at least a hundredth of the picture (width and height counted together) from
+  where it was a second before, or at the start of the track if that is less than a second ago; `false`
+  otherwise, and `false` on a track's very first box. It is worked out afresh for every frame.
 - **`source`** on a packet says how the camera is being served just then and stays put: `"local"` while
   the service is watching it, `"protect"` while it is not (asleep, or not running).
 - The service's boxes are **stamped as Protect stamps its own** (a little after the frame they belong

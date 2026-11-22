@@ -113,6 +113,16 @@ def test_stops_when_the_local_track_is_lost_and_binds_again():
     assert max(times) > 3900 and follow.stats["bound"] == 2
 
 
+def test_leaving_the_picture_is_told_from_being_lost():
+    follow = primed()
+    out_of_view = lambda ms: (min(0.9, 0.5 + 0.0005 * ms), 0.3, min(1.0, 0.6 + 0.0005 * ms), 0.7) if ms < 1200 else None  # noqa: E731
+    run(follow, 2500, ours=out_of_view, protect=lambda at: [theirs(at, box=out_of_view(at))] if at < 1200 else None)
+    assert follow.stats["let_go"]["left"] == 1 and follow.stats["let_go"]["lost"] == 0
+    follow = primed()
+    run(follow, 2500, ours=lambda ms: where(ms) if ms < 1200 else None, protect=lambda at: [theirs(at)])
+    assert follow.stats["let_go"]["lost"] == 1 and follow.stats["let_go"]["left"] == 0
+
+
 def test_stops_when_protect_stops_reporting():
     follow = primed()
     out = run(follow, 5000, protect=lambda at: [theirs(at)] if at <= 1500 else None)
@@ -150,6 +160,9 @@ def test_followed_before_protect_says_anything():
     assert run(follow, 2000) == [] and len(follow.tracker.tracks) == 1
     out = run(follow, 4000, start=2000, protect=lambda at: [theirs(at)] if at >= 1500 else None)
     assert out and follow.stats["bound"] == 1
+    head = follow.head_start()["person"]
+    assert head["n"] == 0 and head["n_all"] == 1  # it was first seen in the middle of the picture: not counted as coming in
+    follow.head["person"][0]["entered"] = True
     head = follow.head_start()["person"]
     assert head["n"] == 1 and 1400 <= head["frames_ms"] <= 1600  # seen from 0; Protect's first report is of the frame at 1500
     assert 1900 <= head["told_ms"] <= 2100  # ... and reached us half a second after that

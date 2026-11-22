@@ -74,6 +74,11 @@ def _middle(box) -> tuple:
     return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
 
 
+def _at_edge(box, margin: float = 0.03) -> bool:
+    """Does a box touch the picture's border (the thing is coming into view, or leaving it)?"""
+    return bool(box) and (box[0] <= margin or box[1] <= margin or box[2] >= 1 - margin or box[3] >= 1 - margin)
+
+
 def _median(values: list) -> float | None:
     values = sorted(values)
     return values[len(values) // 2] if values else None
@@ -106,7 +111,7 @@ class CameraFollow:
         self.tracker = LocalTracker()
         self.theirs: dict[str, _Theirs] = {}
         self.event: dict[str, Any] = {}
-        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
+        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "left": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
                       "theirs_moving": 0, "theirs_followed": 0}  # Protect's tracks seen on the move, and how many of them we followed
         self.shift: float | None = None  # Protect's wall clock minus our own clock
         self.last_frame: tuple[float, dict[str, tuple]] | None = None  # the newest frame's time, and our boxes sent for it
@@ -242,6 +247,7 @@ class CameraFollow:
             "frames_ms": mine.first - local.born,  # our first frame of it, before the frame of Protect's first report
             "told_ms": mine.first_got - born_at if born_at is not None else None,  # we knew, before Protect's first report came
             "size": (local.born_box[3] - local.born_box[1]) / their_h if their_h > 0 else None,  # its height then, against at Protect's first report
+            "entered": _at_edge(local.born_box),  # first seen at the picture's border: it came into view (not a parked thing that set off)
         })
 
     # -------------------------------------------------------------- frames
@@ -266,6 +272,9 @@ class CameraFollow:
             self._born_at.pop(t.id, None)
             if t.id in self._bound_ever:
                 self._bound_ever.discard(t.id)
+                for mine in self.theirs.values():
+                    if mine.local == t.id:  # it went out of view, or was lost in the middle of it
+                        self._unbind(mine, "left" if _at_edge(t.box) else "lost")
             elif t.kind == "person" and t.seen - t.born >= SEEN_MS and t.born_box:
                 a, b = _middle(t.born_box), _middle(t.box)
                 if abs(a[0] - b[0]) + abs(a[1] - b[1]) >= SEEN_MOVE:
@@ -331,9 +340,12 @@ class CameraFollow:
 
     def head_start(self) -> dict[str, Any]:
         out = {}
-        for kind, rows in self.head.items():
+        for kind, all_rows in self.head.items():
+            # only things that came into view: one we had all along (a parked car setting off) would count for far too much
+            rows = [r for r in all_rows if r.get("entered")]
             out[kind] = {
                 "n": len(rows),
+                "n_all": len(all_rows),
                 "frames_ms": _median([round(r["frames_ms"]) for r in rows]),
                 "told_ms": _median([round(r["told_ms"]) for r in rows if r["told_ms"] is not None]),
                 "size": _median([round(r["size"], 2) for r in rows if r["size"] is not None]),
