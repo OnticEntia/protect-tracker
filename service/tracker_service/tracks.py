@@ -6,6 +6,15 @@ is matched to the track it overlaps most, where the track is expected to be
 by now (it keeps moving as it did); what matches nothing starts a new track,
 and a track not seen for a while is dropped.
 
+What stands still is remembered. A thing that has sat in one place for a
+couple of seconds (a parked car) leaves its place on a list, kept for a
+minute after it was last found there, also from what Protect calls
+stationary. A box found in such a place belongs to the thing parked there: a
+track that is going somewhere is never given it. Without this, a car driving
+past a parked one hands its track to the parked one in the moment when only
+one of the two is found (one behind the other, or the detector missing a
+beat), and the parked car goes on under the passing car's name.
+
 Boxes are (x1, y1, x2, y2) in 0-1 units of the picture; times are ms.
 
 Plain Python.
@@ -24,6 +33,9 @@ MATCH_IOU = 0.2  # a box belongs to a track when they overlap at least this much
 NEAR = 0.6  # ... or, failing that, when it is this near (in units of the track's size) and of like size
 SMOOTH_SIZE = 0.5  # how much of a new box's size is taken at once (its edges flicker more than its middle)
 SMOOTH_SPEED = 0.35
+SETTLED_MS = 2000  # followed this long without going anywhere: it stands there
+PLACE_KEEP_MS = 60_000  # a place something stood is remembered this long after it was last found there
+PLACE_IOU = 0.6  # a box is "in that place" when it overlaps the remembered one this much
 
 
 @dataclass
@@ -94,18 +106,43 @@ class LocalTracker:
     def __init__(self) -> None:
         self.tracks: dict[int, Track] = {}
         self.ended: list[Track] = []  # the tracks dropped at the last update
+        self.places: list[dict] = []  # where things stand: {kind, box, seen}
         self._next = 1
+
+    def stands(self, kind: str, box, when: float) -> None:
+        """Note that something of this kind stands here (seen now)."""
+        box = tuple(box[:4])
+        for place in self.places:
+            if place["kind"] == kind and iou(place["box"], box) >= PLACE_IOU:
+                place["box"], place["seen"] = box, max(place["seen"], when)
+                return
+        self.places.append({"kind": kind, "box": box, "seen": when})
+
+    def _place_of(self, kind: str, box) -> dict | None:
+        best, most = None, PLACE_IOU
+        for place in self.places:
+            if place["kind"] == kind:
+                overlap = iou(place["box"], box)
+                if overlap >= most:
+                    best, most = place, overlap
+        return best
 
     def update(self, when: float, found: dict[str, list]) -> list[Track]:
         """Take in a frame's boxes ({kind: [(x1, y1, x2, y2, score)]}).
         Returns the tracks found in this frame."""
         seen_now: list[Track] = []
+        self.places = [p for p in self.places if when - p["seen"] <= PLACE_KEEP_MS]
         for kind, boxes in found.items():
             tracks = [t for t in self.tracks.values() if t.kind == kind]
             expected = {t.id: t.expected(when) for t in tracks}
+            going = {t.id: t.moving() for t in tracks}
+            stood = [self._place_of(kind, box) for box in boxes]  # the place each box is in, if something stands there
             pairs = []
             for t in tracks:
                 for j, box in enumerate(boxes):
+                    # a box where something stands is that thing's: not for a track going somewhere, nor for one from elsewhere
+                    if stood[j] is not None and (going[t.id] or iou(t.box, stood[j]["box"]) < PLACE_IOU):
+                        continue
                     overlap = iou(expected[t.id], box)
                     if overlap >= MATCH_IOU:
                         pairs.append((overlap, t.id, j))
@@ -127,6 +164,9 @@ class LocalTracker:
                     self.tracks[self._next] = track
                     self._next += 1
                     seen_now.append(track)
+        for t in seen_now:  # what has stood in one place for a while leaves that place on the list
+            if when - t.born >= SETTLED_MS and not t.moving(SETTLED_MS):
+                self.stands(t.kind, t.box, when)
         self.ended = [t for t in self.tracks.values() if when - t.seen > GONE_MS]
         for track in self.ended:
             del self.tracks[track.id]

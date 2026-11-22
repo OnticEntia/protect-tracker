@@ -239,3 +239,63 @@ def test_protects_word_and_ours_are_separate():
     out = run(follow, 4000, start=2000, ours=halt, protect=lambda at: [theirs(at, box=halt(at))])
     tr = out[-1]["tracks"][0]
     assert tr["stationary"] is False and tr["moving"] is False
+
+
+PARKED_BOX = (0.45, 0.4, 0.65, 0.6)
+
+
+def passing(ms: float) -> dict:
+    """A car drives left to right past a parked one of the same size. The parked one's box comes and goes (as
+    a detector's does); while the two overlap only one box is found, the parked car's."""
+    x = 0.05 + 0.0002 * ms
+    mover = (x, 0.42, x + 0.2, 0.62, 0.9)
+    overlap = min(mover[2], PARKED_BOX[2]) - max(mover[0], PARKED_BOX[0])
+    parked_seen = ms < 600 or ms > 1500  # not found for a while just before the car reaches it
+    boxes = []
+    if overlap > 0.1:  # one behind the other: one box, where the parked car is
+        boxes.append(PARKED_BOX + (0.8,))
+    else:
+        boxes.append(mover)
+        if parked_seen:
+            boxes.append(PARKED_BOX + (0.7,))
+    return {"vehicle": boxes}
+
+
+def test_a_passing_car_does_not_hand_its_track_to_a_parked_one():
+    follow = primed()
+    mover = lambda at: (0.05 + 0.0002 * at, 0.42, 0.25 + 0.0002 * at, 0.62)  # noqa: E731
+    protect = lambda at: [theirs(at, "car", "vehicle", box=mover(at)),  # noqa: E731
+                          theirs(at, "kerb", "vehicle", stationary=True, box=PARKED_BOX)]
+    out = run(follow, 4500, ours=passing, protect=protect)
+    wrong = []
+    for p in out:
+        ms = p["clockWall"] + STAMP - WALL0
+        for tr in p["tracks"]:
+            assert tr["id"] == "car"  # the parked one is Protect's alone
+            if abs(to_box(tr["coord"])[0] - mover(ms)[0]) > 0.06:
+                wrong.append(round(ms))
+    assert not wrong, f"the passing car's id sat somewhere else (on the parked car) at {wrong[:5]} ... {len(wrong)} frames"
+    assert max(p["clockWall"] + STAMP - WALL0 for p in out) > 4000  # and it is followed again once past
+
+
+def test_the_tracker_remembers_where_things_stand_by_itself():
+    """No word from Protect: a car has stood there for seconds, is not found for a moment, and just then
+    another drives over the spot. The passing car's track must not end up on the parked one."""
+    tracker = LocalTracker()
+    mover_id = None
+    for i in range(240):
+        ms = i * 100 / 3
+        x = -0.6 + 0.0002 * ms  # the passing car comes into view at 3 s
+        mover = (x, 0.42, x + 0.2, 0.62, 0.9)
+        overlap = min(mover[2], PARKED_BOX[2]) - max(mover[0], PARKED_BOX[0])
+        boxes = []
+        if x > 0 and overlap <= 0.1:
+            boxes.append(mover)
+        if ms < 4000 or overlap > 0.1 or ms > 6500:  # found, then not, then found again as the other passes
+            boxes.append(PARKED_BOX + (0.8,))
+        for t in tracker.update(ms, {"vehicle": boxes}):
+            if mover_id is None and x > 0.02 and abs(t.box[0] - x) < 0.02:
+                mover_id = t.id
+    assert mover_id is not None and tracker.places
+    track = tracker.tracks.get(mover_id)
+    assert track is None or abs(track.box[0] - PARKED_BOX[0]) > 0.1, "the passing car's track is sitting on the parked car"

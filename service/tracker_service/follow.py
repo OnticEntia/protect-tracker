@@ -168,6 +168,8 @@ class CameraFollow:
             mine.stationary = bool(tr.get("stationary"))
             mine.reported = frame_time
             boxes[tid] = to_box(tr["coord"])
+            if mine.stationary and mine.kind is not None:
+                self.tracker.stands(mine.kind, boxes[tid], frame_time)  # Protect says it stands there: remembered
             if not mine.first_box:
                 mine.first_box = boxes[tid]
             if not mine.stationary and mine.kind is not None and not mine.was_moving:
@@ -190,7 +192,8 @@ class CameraFollow:
                 mine.misses = 0
             else:
                 mine.misses += 1
-                if mine.misses >= MISSES:
+                # (ours stands still while Protect's goes on elsewhere: that is not the same thing, at once)
+                if mine.misses >= MISSES or not local.moving():
                     self._unbind(mine, "disagreed")
 
         # new bindings: the best overlaps first, each local track for one of theirs
