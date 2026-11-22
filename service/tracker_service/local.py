@@ -33,7 +33,7 @@ SURE = {"person": (0.45, 0.025), "vehicle": (0.5, 0.04), "animal": (0.5, 0.04)}
 PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)
-COAST_MS = 300  # a told track not found in a frame keeps moving as it did for this long
+COAST_MS = 500  # a told track not found in a frame keeps moving as it did, until the tracker gives it up (tracks.GONE_MS)
 
 
 def _middle(box) -> tuple:
@@ -138,7 +138,7 @@ class LocalView:
                             "id": f"{told.name}:face", "coord": to_coord(face.box), "objectType": "face",
                             "confidence": int(round(float(face.score) * 100)), "stationary": False, "moving": face.moving(),
                             "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True,
-                            "confirmed": told.protect is not None, "of": told.name,
+                            "confirmed": told.protect is not None, "protectId": None, "eventId": None, "of": told.name,
                         })
                         break
         return entries
@@ -148,9 +148,9 @@ class LocalView:
         entry: dict[str, Any] = {
             "id": told.name, "coord": to_coord(box), "objectType": track.kind, "confidence": int(round(float(told.best) * 100)),
             "stationary": False, "moving": track.moving(), "zones": [], "loiterZones": [], "lines": [], "desc": "",
-            "local": True, "confirmed": False,
+            "local": True, "confirmed": False, "protectId": None, "eventId": None,
         }
-        if told.protect is not None:  # Protect's details, as it last gave them
+        if told.protect is not None:  # Protect's details, as it last gave them (every field stays there, empty at worst)
             entry.update({k: v for k, v in told.meta.items() if v is not None})
             entry.update({"protectId": told.protect, "confirmed": True, "stationary": told.stationary})
         return entry

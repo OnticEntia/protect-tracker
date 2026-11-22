@@ -112,12 +112,12 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         with patch("custom_components.protect_tracker.camera_of", return_value="cam1"):
             await client.send_json({"id": 2, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere"})
             assert (await client.receive_json())["success"]
-        assert (await client.receive_json())["event"] == {"status": "connected", "service": True}
+        assert (await client.receive_json())["event"] == {"status": "connected", "mode": "auto", "service": True}
         send({**WALKING, "clockWall": 1000.0, "clockStream": 500.0, "clockStreamRate": 1000})
         theirs = (await client.receive_json())["event"]
         assert theirs["clockWall"] == 1000.0 and theirs["clockStream"] == 500.0  # as Protect sent it
         assert theirs["source"] == "local"  # the service is watching this camera: that is how it is served
-        assert theirs["tracks"] == [{**WALKING["tracks"][0], "local": False}]  # no box of the service's yet: Protect's
+        assert theirs["tracks"] == [{**WALKING["tracks"][0], "local": False}] and theirs["mode"] == "auto"  # no box of the service's yet: Protect's
         ours = {"source": "local", "clockWall": 1100.0, "clockStream": 400.0, "clockStreamRate": 1000,
                 "tracks": [{"id": "2", "coord": [5, 6, 7, 8], "objectType": "person", "local": True}]}
         await service.ws.send_json({"type": "tracks", "camera": "cam1", "packet": ours})
@@ -136,8 +136,10 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         with patch("custom_components.protect_tracker.camera_of", return_value="cam1"):
             await client.send_json({"id": 7, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere", "mode": "local"})
             assert (await client.receive_json())["success"]
-        assert (await client.receive_json())["event"]["status"] == "connected"
-        mine = {"source": "local", "clockWall": 1200.0, "clockStream": 600.0, "clockStreamRate": 1000,
+        assert (await client.receive_json())["event"] == {"status": "connected", "mode": "local", "service": True}
+        recorded = []
+        relay.record_live = lambda camera, packet: recorded.append((camera, packet["tracks"][0]["id"]))
+        mine = {"source": "local", "mode": "local", "clockWall": 1200.0, "clockStream": 600.0, "clockStreamRate": 1000,
                 "tracks": [{"id": "Lx-1", "coord": [1, 2, 3, 4], "objectType": "person", "local": True, "confirmed": False}]}
         await service.ws.send_json({"type": "tracks", "camera": "cam1", "mode": "local", "packet": mine})
         assert (await client.receive_json())["event"] == mine
@@ -145,6 +147,7 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         got = await client.receive_json()
         assert got["id"] == 2 and got["event"]["source"] == "local" and got["event"]["tracks"][0]["local"] is False
         assert hub.seen["cam1"] == {"at": hub.seen["cam1"]["at"], "count": 1, "confirmed": False}  # a person, by the service's word
+        assert recorded == [("cam1", "Lx-1")]  # and handed to the record of sightings
         await client.send_json({"id": 8, "type": "unsubscribe_events", "subscription": 7})
         assert (await client.receive_json())["success"]
         await client.send_json({"id": 9, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere", "mode": "nonsense"})

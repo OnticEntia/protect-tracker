@@ -108,12 +108,21 @@ silent. Nothing of Protect's own is passed on in this mode. Same packets; per tr
 
 A face is a track of its own here too (`<the person's id>:face`, `of`).
 
+Every field is there on every track, empty rather than missing (`desc` `""`, the lists `[]`,
+`protectId` and `eventId` `null`); `eventId` is per track, the Protect event its track was reported
+under. Every packet has `mode: "local"` and `snapshot: true`: it is the whole of what is told at that
+moment, so a track that is not in a packet is gone. With nothing to tell, an empty packet says so about
+once a second; silence for a few seconds therefore means the camera is not being served (the service's
+connection going and coming back is also said, as `{"status": "disconnected" | "connected", "mode":
+"local"}`). An integration too old to know `mode` refuses the request as `invalid_format`.
+
 With nobody to veto it, the service only tells a thing that has been found for a quarter of a second,
 surely enough and big enough for its kind, **and has travelled from where it was first found**. What
 only stands there (a parked car, a bike) is never told; a parked car that drives off is told from when
-it moves. Packets are stamped as in the default mode, so a card times them the same way. Before
-Protect has reported anything since the service started, `clockWall` is the service's own estimate
-(`clockStream`, which is what the picture is matched with, is exact from the first packet).
+it moves. Packets are stamped as in the default mode, so a card times them the same way. `clockStream`, which is what
+the picture is matched with, is exact from the first packet. `clockWall` is the service's own estimate
+until Protect has reported something, and is then brought to Protect's clock gradually: it never jumps
+and never runs backwards.
 
 This mode wants "Watch all the time" switched on: otherwise the service only looks once Protect has
 already reported something.

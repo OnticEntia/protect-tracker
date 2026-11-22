@@ -83,6 +83,7 @@ def test_boxes_for_every_frame_under_protects_id():
 
     wall0, got, statuses, state, local = asyncio.run(go())
     # on its own word the square was told well before Protect's report of it was bound, under an id of the service's own
+    local = [m for m in local if m["packet"]["tracks"]]
     assert local and local[0]["packet"]["tracks"][0]["id"].startswith("L") and any(m["packet"]["tracks"][0].get("protectId") == "T7" for m in local)
     assert len(local) > len(got) and state["cameras"]["c1"]["local"]["told"] >= 1  # (the made-up video is played again when it ends)
     assert statuses and statuses[0]["device"] == "test"

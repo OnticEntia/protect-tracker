@@ -59,6 +59,8 @@ END_MS = 1500  # no report of a Protect track for this long (by frame time): it 
 BUSY_MS = 2000  # something moved this recently: every frame is looked at
 FAR_HEIGHT = 0.06  # a thing whose box is less than this share of the picture's height is far off
 META = ("objectType", "confidence", "zones", "loiterZones", "lines", "desc")
+BEAT_MS = 1000  # with nothing to tell, the local stream still says so this often (so quiet is told from dead)
+SLEW = 0.1  # the local stream's wall clock is brought to Protect's at this share of real time (never a jump, never backwards)
 SEEN_MS, SEEN_MOVE = 1000, 0.05  # a local person counts as seen when followed this long and this far (share of the picture)
 
 
@@ -111,6 +113,10 @@ class CameraFollow:
         self.stamp = float(stamp_ms)
         self.local = LocalView(epoch)  # the same tracks, told on our own word (local.py)
         self.local_packets: list[dict[str, Any]] = []  # what the last frame gave for those who asked for that
+        self._local_off: float | None = None  # what is added to our clock for the local stream's wall clock
+        self._local_at = 0.0  # our clock at the last frame (for bringing that to Protect's, gently)
+        self._local_sent = 0.0  # ... and when the local stream last said anything
+        self._local_had = False  # did its last packet have tracks in it
         self.clock = FeedClock()
         self.tracker = LocalTracker()
         self.theirs: dict[str, _Theirs] = {}
@@ -168,6 +174,7 @@ class CameraFollow:
             tid = str(tr.get("id"))
             mine = self.theirs.get(tid) or self.theirs.setdefault(tid, _Theirs(tid, frame_time, now_ms))
             mine.meta = {key: tr.get(key) for key in META}
+            mine.meta["eventId"] = packet.get("eventId")  # the event this track was reported under
             mine.kind = KINDS.get(tr.get("objectType"))
             mine.stationary = bool(tr.get("stationary"))
             mine.reported = frame_time
@@ -301,7 +308,11 @@ class CameraFollow:
         if self.shift is None:
             self._tie(now_ms)
         told = self.local.frame(when, self.tracker.tracks, seen_tracks, self.tracker.ended)
-        self.local_packets = [self._packet(when, told)] if told else []
+        self.local_packets = []
+        # every packet is the whole of what is told just now; an empty one when the last thing has gone, and now and then
+        if told or self._local_had or when - self._local_sent >= BEAT_MS:
+            self.local_packets = [self._local_packet(when, told)]
+            self._local_sent, self._local_had = when, bool(told)
         if self.shift is None:
             return []  # followed all the same; in Protect's name nothing can go out before Protect has reported
         entries = []
@@ -372,6 +383,25 @@ class CameraFollow:
         return out
 
     # ------------------------------------------------------------- packets
+
+    def _local_packet(self, when: float, tracks: list[dict[str, Any]]) -> dict[str, Any]:
+        """A packet of the local stream. Its stream clock is the frames' own
+        from the first packet (that is what a card matches the picture with).
+        Its wall clock is ours until Protect's is known, and is then brought
+        to Protect's little by little: it never jumps and never runs back."""
+        if self._local_off is None:
+            self._local_off = self.shift if self.shift is not None else 0.0
+        elif self.shift is not None and self._local_off != self.shift:
+            most = SLEW * max(0.0, when - self._local_at)
+            self._local_off += max(-most, min(most, self.shift - self._local_off))
+        self._local_at = when
+        wall = when + self._local_off - self.stamp
+        stream = (self._unwrap._last or 0) / 90.0 - (self._newest() - when) - self.stamp  # noqa: SLF001
+        return {
+            "source": "local", "mode": "local", "snapshot": True,
+            "clockWall": round(wall, 1), "clockStream": round(stream, 1), "clockStreamRate": 1000,
+            "eventId": None, "tracks": tracks,
+        }
 
     def _entry(self, mine: _Theirs, box, moving: bool) -> dict[str, Any]:
         # `stationary` is Protect's word, as it last said it; `moving` is what we see ourselves

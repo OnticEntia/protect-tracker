@@ -143,6 +143,7 @@ class TrackerHub:
         self.listeners: dict[tuple[str, str], set[Send]] = {}  # (camera, mode) -> the cards listening to it
         self.seen: dict[str, dict[str, Any]] = {}  # camera -> the people the service sees there now: {at, count, confirmed}
         self.seen_listeners: dict[str, set[Callable[[], None]]] = {}
+        self._was_linked = False
         self._fresh: dict[str, dict[str, float]] = {}  # camera -> track id -> when the service last sent a box of it
         self._relay: Any = None  # Protect Detections' hub the reports come from
         self._unsubs: dict[str, Callable[[], None]] = {}
@@ -194,8 +195,7 @@ class TrackerHub:
         if not isinstance(payload, dict):
             return
         if payload.get("status"):
-            self._tell(camera, payload)
-            self._tell(camera, payload, "local")
+            self._tell(camera, payload)  # (of Protect's feed: nothing the local stream hangs on)
             return
         if (camera, "auto") in self.listeners:
             self._tell(camera, self._theirs(camera, payload))
@@ -227,6 +227,12 @@ class TrackerHub:
     @callback
     def _check(self, _now=None) -> None:
         self._attach()
+        if self.link.connected != self._was_linked:
+            self._was_linked = self.link.connected
+            if not self.link.connected:  # the service has gone: said to those who rely on it alone
+                for camera, mode in list(self.listeners):
+                    if mode == "local":
+                        self._tell(camera, {"status": "disconnected", "mode": "local", "service": False}, "local")
         if self.always:  # every camera stays awake, whether or not Protect's reports are coming
             for camera in set(self._unsubs) | set(smart_cameras(_protect_api(self.hass))):
                 self.waker.awake[camera] = time.monotonic()
@@ -247,7 +253,10 @@ class TrackerHub:
     @callback
     def _linked(self) -> None:
         self._fresh.clear()
-        self.watching.clear()  # a service just (re)connected watches nothing yet: _check sees to it
+        self.watching.clear()
+        for camera, mode in list(self.listeners):
+            if mode == "local":  # the service is back
+                self._tell(camera, {"status": "connected", "mode": "local", "service": True}, "local")  # a service just (re)connected watches nothing yet: _check sees to it
 
     @callback
     def _from_service(self, message: dict[str, Any]) -> None:
@@ -257,6 +266,8 @@ class TrackerHub:
             camera, now = str(message.get("camera")), time.monotonic()
             if message.get("mode") == "local":  # on the service's own word
                 self._tell(camera, message["packet"], "local")
+                if message["packet"].get("tracks"):
+                    self._record(camera, message["packet"])
                 people = [t for t in message["packet"].get("tracks") or [] if isinstance(t, dict) and t.get("objectType") == "person"]
                 if people:
                     was = camera in self.seen
@@ -283,9 +294,19 @@ class TrackerHub:
             if isinstance(tr, dict) and now - fresh.get(str(tr.get("id")), -1e9) > HOLD_S
         ]
         served = self.link.connected and camera in self.watching
-        return {**payload, "tracks": tracks, "source": "local" if served else "protect"}
+        return {**payload, "tracks": tracks, "source": "local" if served else "protect", "mode": "auto"}
 
     # --------------------------------------------------------- the cards
+
+    def _record(self, camera: str, packet: dict[str, Any]) -> None:
+        """Hand what the service sees to Protect Detections' record of
+        sightings, where that has a way in (boxes, kinds and times only)."""
+        record = getattr(self.hass.data.get(DETECTIONS), "record_live", None)
+        if callable(record):
+            try:
+                record(camera, packet)
+            except Exception:  # noqa: BLE001 - the record is theirs to keep right
+                _LOGGER.debug("Protect Detections couldn't take a sighting", exc_info=True)
 
     def _seen_changed(self, camera: str) -> None:
         for tell in list(self.seen_listeners.get(camera) or ()):
@@ -367,7 +388,7 @@ def ws_live_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConne
 
     connection.send_result(msg["id"])
     connection.subscriptions[msg["id"]] = hub.subscribe(camera, send, mode)
-    send({"status": "connected", "service": hub.link.connected})
+    send({"status": "connected", "mode": mode, "service": hub.link.connected})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
