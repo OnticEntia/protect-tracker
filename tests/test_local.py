@@ -34,9 +34,9 @@ def test_a_person_is_told_with_no_word_from_protect():
     assert follow.frame(rtp_of(3000), {}, WALL0 + 3000) == []  # in Protect's name: nothing
     out = [p for p in out if p["tracks"]]
     first = frame_ms(out[0])
-    assert 250 <= first <= 450  # after a quarter of a second, once it has also moved a little
+    assert first <= 150  # plainly a person: told on the third frame, a tenth of a second in
     times = [frame_ms(p) for p in out]
-    assert len(times) >= 75 and times == sorted(times)  # every frame from then on
+    assert len(times) >= 85 and times == sorted(times)  # every frame from then on
     for p in out:
         (tr,) = p["tracks"]
         assert tr["id"] == "Lt1-1" and tr["objectType"] == "person" and tr["local"] is True and tr["confirmed"] is False
@@ -372,3 +372,31 @@ def test_two_people_side_by_side_each_keep_their_own_face():
                 x = to_box(tr["coord"])[0]
                 assert abs(x - face(owner, ms)[0]) < 0.012, f"{tr['id']} was on the other person's face at {ms:.0f}"
     assert max(len(p["tracks"]) for p in out) == 4
+
+
+def test_a_man_walking_in_is_told_at_the_edge_and_a_pillar_is_never_told():
+    """From the replay of a real evening: a porch pillar far off is found as a "person" for minutes on end
+    (42 pixels tall, 32 to 63% sure, there one moment and not the next), a speck elsewhere now and then, and
+    then a man walks in at the left edge, 180 pixels tall and plainly a person."""
+    def scene(ms: float) -> dict:
+        people = []
+        k = int(ms / STEP + 0.5)
+        if (ms // 900) % 4 != 3:  # the pillar: found most of the time, sure of it now and then
+            sure = 0.63 if k % 97 < 3 else 0.52 if k % 31 < 4 else 0.34
+            people.append((0.683, 0.060, 0.694, 0.119, sure))
+        if 19000 <= ms < 19600:
+            people.append((0.585, 0.048, 0.595, 0.063, 0.32))  # a speck
+        if ms >= 43400:  # the man: at the edge, more of him in view with each frame
+            into = (ms - 43400) / 1000
+            people.append((0.0, 0.53 if into > 0.06 else 0.63, 0.06 + 0.09 * into, 0.87, 0.65 if into < 0.03 else 0.75 if into < 0.06 else 0.89))
+        return {"person": people}
+
+    follow = CameraFollow(STAMP, epoch="eve")
+    out = play(follow, 50000, scene)
+    told = [(frame_ms(p), tr) for p in out for tr in p["tracks"]]
+    ids = {tr["id"] for _, tr in told}
+    assert len(ids) == 1, f"{len(ids)} people told: {sorted(ids)}"
+    first = min(ms for ms, _ in told)
+    assert 43400 <= first <= 43400 + 120  # on his third frame, at the edge
+    assert all(tr["coord"][0] < 600 for _, tr in told)  # never the pillar
+    assert any(p["kind"] == "person" for p in follow.tracker.places)  # which is remembered as a fixture

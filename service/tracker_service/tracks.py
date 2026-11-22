@@ -94,6 +94,25 @@ class Track:
                 return bool(abs((box[0] + box[2]) - (newest[0] + newest[2])) / 2 + abs((box[1] + box[3]) - (newest[1] + newest[3])) / 2 >= least)
         return False
 
+    def walking(self, within_ms: float = 500.0) -> bool:
+        """Has it been going somewhere, step by step, of late: found in most
+        frames, no step a leap, and a little way covered in all? (A box that
+        jumps from one place to another has not walked there.)"""
+        hist = [(t, b) for t, b in self.history if t >= self.seen - within_ms]
+        if len(hist) < 4 or hist[-1][0] - hist[0][0] < 0.5 * within_ms:
+            return False
+        height = max(1e-6, self.box[3] - self.box[1])
+        for (t0, a), (t1, b) in zip(hist, hist[1:]):
+            step = abs((a[0] + a[2]) - (b[0] + b[2])) / 2 + abs(a[1] - b[1])
+            if t1 - t0 > 150 or step > 0.5 * height:
+                return False
+        first, last = hist[0][1], hist[-1][1]
+        return bool(abs((first[0] + first[2]) - (last[0] + last[2])) / 2 + abs(first[1] - last[1]) >= max(0.008, 0.12 * height))
+
+    def stood(self, for_ms: float) -> bool:
+        """Has it been in one place for this long?"""
+        return self.seen - self.born >= for_ms and not self.moving(for_ms)
+
     def at(self, when: float, slack: float = 45.0) -> tuple | None:
         """Its box at a past moment (between two frames: in between); None
         when it wasn't being followed then."""
@@ -226,7 +245,7 @@ class LocalTracker:
                     overlap = iou(expected[t.id], box)
                     if overlap >= MATCH_IOU:
                         pairs.append((overlap, t.id, j))
-                    else:
+                    elif not (kind == "person" and t.stood(SETTLED_MS)):  # (what has stood there for seconds does not leap)
                         far = _near(expected[t.id], box, kind == "person", when - t.seen)
                         if far is not None:
                             pairs.append((-1.0 - far, t.id, j))  # a last resort, after every real overlap; the nearest first

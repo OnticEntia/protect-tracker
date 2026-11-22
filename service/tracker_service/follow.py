@@ -115,7 +115,7 @@ class CameraFollow:
     def __init__(self, stamp_ms: float = -125.0, epoch: str = "0") -> None:
         self.stamp = float(stamp_ms)
         self.tracker = LocalTracker()
-        self.local = LocalView(epoch, self.tracker.place_of)  # the same tracks, told on our own word (local.py)
+        self.local = LocalView(epoch, self.tracker.place_of, self.tracker.stands)  # the same tracks, told on our own word (local.py)
         self.local_packets: list[dict[str, Any]] = []  # what the last frame gave for those who asked for that
         self.faces = FaceCarry()  # (for the faces sent in Protect's name: the same carrying along)
         self._local_off: float | None = None  # what is added to our clock for the local stream's wall clock

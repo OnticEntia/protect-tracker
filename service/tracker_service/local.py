@@ -10,9 +10,17 @@ waits for Protect, and nothing stops when Protect goes quiet.
 
 With nobody to say "that is nothing", being sure is this module's own job:
 
-  - a thing must have been found for a moment (a quarter of a second, a few
-    frames running), surely enough and big enough for its kind;
-  - and it must have travelled from where it was first found: half its own
+  - a person the detector is sure of (SURE_AT_ONCE) is told at once: three
+    frames running, a tenth of a second, wherever they are and whether or
+    not they move. Someone walking into the picture is told at its edge;
+  - a person it is less sure of must also be seen walking: found in most
+    frames for a quarter of a second, going somewhere step by step. And one
+    that has stood in one place for seconds without the detector ever being
+    sure is taken for a fixture (a post, a sign, a shape in a hedge), and is
+    not told;
+  - anything else (a vehicle, an animal) must have been found for a moment,
+    surely enough and big enough for its kind;
+  - and must have travelled from where it was first found: half its own
     size at least (the box of a parked car shifts a little whenever something
     passes in front of it), and be on the move at that moment;
   - and it must not be sitting where something is known to stand (the
@@ -39,6 +47,8 @@ from .tracks import Track
 # (a person far off is small: the sharper look finds them from about a fortieth of the picture's height)
 # (a vehicle that small is far down the road, found one moment and not the next: not told until it is nearer)
 SURE = {"person": (0.45, 0.025), "vehicle": (0.5, 0.06), "animal": (0.5, 0.04)}
+SURE_AT_ONCE = 0.75  # a person the detector is this sure of is told at once (three frames), moving or not
+FIXTURE_MS = 4000  # a "person" in one place this long, never surely found, is taken for a fixture
 PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)
@@ -70,9 +80,10 @@ class _Told:
 
 
 class LocalView:
-    def __init__(self, epoch: str, standing=None) -> None:
+    def __init__(self, epoch: str, standing=None, stands=None) -> None:
         self.epoch = epoch  # part of every track id, so ids are not used again after a restart
         self.standing = standing or (lambda kind, box: None)  # is this box where something is known to stand
+        self.stands = stands or (lambda kind, box, when, track=None: None)  # note that something stands here
         self.tracks: dict[int, _Told] = {}
         self.faces = FaceCarry()  # each person's face, kept with them between the frames it is found in
         self.stats = {"told": 0, "confirmed": 0, "people": 0}
@@ -99,10 +110,54 @@ class LocalView:
         if told is not None and told.protect is not None:
             told.stationary = True
 
+    def why_not(self, track: Track, told: _Told) -> list[str]:
+        """What still stands in the way of telling this thing (for looking into it; `sure` is the rule)."""
+        need = SURE.get(track.kind)
+        if need is None or not track.born_box:
+            return ["not a kind that is told"]
+        a, b = _middle(track.born_box), _middle(track.box)
+        own = min(track.box[2] - track.box[0], track.box[3] - track.box[1])
+        out = []
+        if track.kind == "person":
+            if told.best < need[0]:
+                out.append(f"not sure enough ({told.best:.2f} < {need[0]})")
+            if track.box[3] - track.box[1] < need[1]:
+                out.append(f"too small ({track.box[3] - track.box[1]:.3f} < {need[1]})")
+            if track.hits < PERSIST_HITS:
+                out.append("not found for long enough yet")
+            if self.standing("person", track.box) is not None and not track.walking():
+                out.append("where a fixture is known to be")
+            elif told.best < SURE_AT_ONCE:
+                out.append("stands like a fixture" if track.stood(FIXTURE_MS) else "not surely a person, and not seen walking" if not track.walking() else "")
+            return [w for w in out if w]
+        if told.best < need[0]:
+            out.append(f"not sure enough ({told.best:.2f} < {need[0]})")
+        if track.box[3] - track.box[1] < need[1]:
+            out.append(f"too small ({track.box[3] - track.box[1]:.3f} < {need[1]})")
+        if track.hits < PERSIST_HITS or track.seen - track.born < PERSIST_MS:
+            out.append("not found for long enough yet")
+        if abs(a[0] - b[0]) + abs(a[1] - b[1]) < max(TRAVEL, TRAVEL_OWN * own):
+            out.append(f"has not travelled ({abs(a[0] - b[0]) + abs(a[1] - b[1]):.3f} < {max(TRAVEL, TRAVEL_OWN * own):.3f})")
+        if not track.moving():
+            out.append("not moving just now")
+        if self.standing(track.kind, track.box) is not None:
+            out.append("where something stands")
+        return out
+
     def sure(self, track: Track, told: _Told) -> bool:
         need = SURE.get(track.kind)
         if need is None or not track.born_box:
             return False
+        if track.kind == "person":
+            if told.best < need[0] or track.box[3] - track.box[1] < need[1] or track.hits < PERSIST_HITS:
+                return False
+            if self.standing("person", track.box) is not None and not track.walking():
+                return False  # where a fixture is known to be (a post, a sign: found as a person time and again)
+            if told.best >= SURE_AT_ONCE:
+                return True  # plainly a person: told at once
+            if track.stood(FIXTURE_MS):
+                return False  # never surely a person, and has not stirred: a fixture
+            return track.seen - track.born >= PERSIST_MS and track.walking()
         a, b = _middle(track.born_box), _middle(track.box)
         own = min(track.box[2] - track.box[0], track.box[3] - track.box[1])
         return (
@@ -136,6 +191,8 @@ class LocalView:
             else:
                 continue
             if not told.told:
+                if t.kind == "person" and t.id in seen_ids and t.stood(FIXTURE_MS):
+                    self.stands("person", t.box, when, t.id)  # never told, and has not stirred: remembered as a fixture
                 if not self.sure(t, told):
                     continue
                 told.told = True
