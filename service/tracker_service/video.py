@@ -1,4 +1,8 @@
-"""Coded pictures to frames, each still carrying its RTP timestamp."""
+"""Coded pictures to frames, each still carrying its RTP timestamp.
+
+Frames are held in memory only for as long as it takes to look at them;
+nothing is ever written to disk.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +13,8 @@ from .rtp import START, AccessUnit, Unwrap
 
 class Decoder:
     """Decodes access units (rtp.py) with FFmpeg's decoder through PyAV. A
-    frame comes back as (RTP timestamp, h x w x 3 BGR picture); the timestamp
-    is the one its packets carried."""
+    frame comes back as (RTP timestamp, frame); the timestamp is the one its
+    packets carried. `picture` turns a frame into pixels at the size wanted."""
 
     def __init__(self, codec: str, parameter_sets: list[bytes] | None = None) -> None:
         import av  # noqa: PLC0415
@@ -23,7 +27,7 @@ class Decoder:
         self._unwrap = Unwrap()
         self._started = False
 
-    def decode(self, unit: AccessUnit, width: int | None = None, height: int | None = None) -> list[tuple[int, np.ndarray]]:
+    def decode(self, unit: AccessUnit) -> list[tuple[int, object]]:
         if not self._started:
             if not unit.key:
                 return []  # nothing can be made of a picture that leans on ones not seen
@@ -33,15 +37,16 @@ class Decoder:
             data = unit.data
         packet = self._av.Packet(data)
         packet.pts = self._unwrap(unit.timestamp)
-        out = []
         try:
             frames = self._ctx.decode(packet)
         except self._av.error.FFmpegError:
             self._started = False  # start again at the next key picture
             return []
-        for frame in frames:
-            if frame.pts is None:
-                continue
-            kw = {"width": width, "height": height} if width and height else {}
-            out.append((int(frame.pts) % (1 << 32), frame.to_ndarray(format="bgr24", **kw)))
-        return out
+        return [(int(frame.pts) % (1 << 32), frame) for frame in frames if frame.pts is not None]
+
+
+def picture(frame, width: int | None = None, height: int | None = None) -> np.ndarray:
+    """A decoded frame as h x w x 3 BGR pixels, scaled when a size is given."""
+    if width and height:
+        return frame.to_ndarray(format="bgr24", width=width, height=height)
+    return frame.to_ndarray(format="bgr24")

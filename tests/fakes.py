@@ -90,8 +90,9 @@ def packetize(codec: str, frames: list[bytes], first_ts: int, step: int = 3000, 
 class FakeCamera:
     """An RTSP server that plays the given RTP packets once, then hangs up."""
 
-    def __init__(self, codec: str, packets: list[bytes], path: str = "/stream") -> None:
+    def __init__(self, codec: str, packets: list[bytes], path: str = "/stream", pace: float = 0.0) -> None:
         self.codec, self.packets, self.path = codec, packets, path
+        self.pace = pace  # seconds between frames (0: everything at once)
         self.asked: list[str] = []
         self.server: asyncio.AbstractServer | None = None
 
@@ -129,7 +130,12 @@ class FakeCamera:
                 writer.write(f"RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\n{extra}Content-Length: {len(body)}\r\n\r\n{body}".encode())
                 await writer.drain()
                 if method == "PLAY":
+                    stamp = None
                     for i, packet in enumerate(self.packets):
+                        if self.pace and stamp is not None and packet[4:8] != stamp:
+                            await writer.drain()
+                            await asyncio.sleep(self.pace)
+                        stamp = packet[4:8]
                         writer.write(b"$\x00" + len(packet).to_bytes(2, "big") + packet)
                         if i % 7 == 0:  # something on the other channel now and then, to be skipped
                             writer.write(b"$\x01\x00\x04abcd")

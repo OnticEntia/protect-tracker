@@ -36,7 +36,7 @@ from tracker_service.clock import RTP_WRAP_MS  # noqa: E402
 from tracker_service.detect import Detector, FaceDetector, find_faces, iou  # noqa: E402
 from tracker_service.rtp import Depacketizer, Unwrap  # noqa: E402
 from tracker_service.rtsp import RtspError, RtspReader, VideoTrack  # noqa: E402
-from tracker_service.video import Decoder  # noqa: E402
+from tracker_service.video import Decoder, picture  # noqa: E402
 
 STEPS = list(range(-800, 601, 25))  # ms tried: our frame's stamp minus the report's
 
@@ -74,15 +74,16 @@ class Looker(threading.Thread):
             t0 = time.perf_counter()
             decoded = self.decoder.decode(unit)
             t1 = time.perf_counter()
-            for rtp, picture in decoded:
-                self.size = picture.shape[1::-1]
+            for rtp, frame in decoded:
+                small = picture(frame, self.detector.w, self.detector.h)
+                self.size = (frame.width, frame.height)
                 self.times["decode"].append(t1 - t0)
                 t2 = time.perf_counter()
-                boxes = self.detector.detect(picture, 0.3, ("person", "vehicle", "animal"))
+                boxes = self.detector.detect(small, 0.3, ("person", "vehicle", "animal"))
                 t3 = time.perf_counter()
                 self.times["detect"].append(t3 - t2)
                 if self.face is not None and boxes["person"]:
-                    boxes["face"] = find_faces(self.face, picture, boxes["person"], 0.6)
+                    boxes["face"] = find_faces(self.face, picture(frame), boxes["person"], 0.6)
                     self.times["face"].append(time.perf_counter() - t3)
                 self.frames.append({"rtp": rtp, "at": at, "done": now_ms(), "boxes": boxes})
 

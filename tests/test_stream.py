@@ -7,7 +7,7 @@ import pytest
 from fakes import FakeCamera, encode, packetize, rtp, square_at
 from tracker_service.rtp import Depacketizer, Unwrap, parse_rtp
 from tracker_service.rtsp import RtspError, RtspReader, parse_sdp
-from tracker_service.video import Decoder
+from tracker_service.video import Decoder, picture
 
 NEAR_WRAP = (1 << 32) - 3000 * 5  # the timestamps start over during the test
 
@@ -36,7 +36,7 @@ def test_frames_keep_their_timestamps(codec, aggregate):
     assert track.codec == codec
     assert len(frames) >= 18
     for ts, img in frames:
-        i = square_at(img)
+        i = square_at(picture(img))
         assert ts == (NEAR_WRAP + i * 3000) % (1 << 32), f"frame {i} came out stamped as another"
 
 
@@ -52,7 +52,7 @@ def test_starts_at_a_key_picture():
         started = True
         for unit in depack.push(packet):
             got += decoder.decode(unit)
-    assert got and square_at(got[0][1]) == 10  # the next key picture (every tenth)
+    assert got and square_at(picture(got[0][1])) == 10  # the next key picture (every tenth)
 
 
 def test_a_lost_packet_is_noticed():
