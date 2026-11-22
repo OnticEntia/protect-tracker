@@ -126,12 +126,13 @@ def _near(track_box, box, person: bool = False, unseen_ms: float = 0.0) -> float
     dy = abs((track_box[1] + track_box[3]) - (box[1] + box[3])) / 2
     ratio = (bw * bh) / (tw * th)
     if person:
-        # bent over, half hidden: a person's box may be a third of what it was, or three times. And a person is
+        # bent over, half hidden: a person's box may be a fraction of what it was, or several times. And a person is
         # narrow (far off, a hundredth of the picture across): how far they may have gone is reckoned in their
         # height, not their width, or one step sideways would make a stranger of them.
         reach = NEAR + REACH_PER_S * unseen_ms / 1000.0
         size = max(tw, th, bh)
-        ok = 0.3 < ratio < 3.3 and dx <= reach * size and dy <= max(NEAR, 0.35 * reach) * size
+        # (coming out from behind a post they are a sliver at first: a sixth of what they were is still them)
+        ok = 0.15 < ratio < 6.5 and dx <= reach * size and dy <= max(NEAR, 0.35 * reach) * size
         return (dx + dy) / size if ok else None
     ok = 0.5 < ratio < 2.0 and dx <= NEAR * tw and dy <= NEAR * th
     return dx / tw + dy / th if ok else None

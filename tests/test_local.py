@@ -282,3 +282,21 @@ def test_someone_small_and_far_off_is_one_track_too():
     assert {tr["id"] for p in told for tr in p["tracks"]} == {"Lfar-1"}
     assert all(len(p["tracks"]) == 1 for p in told) and follow.local.stats["people"] == 1
     assert max(frame_ms(p) for p in told) > 11900
+
+
+def test_coming_out_from_behind_a_post_as_a_sliver_is_still_them():
+    """From a real visit: someone near the camera walks behind a post, is not found for 0.4 s, and is found
+    again as a narrow strip of themselves (a quarter of the size) coming out the other side."""
+    def scene(ms: float) -> dict:
+        x = 0.05 + 0.00004 * ms
+        if ms < 3000:
+            return {"person": [(x, 0.38, x + 0.06, 0.70, 0.9)]}
+        if ms < 3400:
+            return {"person": []}
+        grown = min(1.0, (ms - 3400) / 600)  # the strip widens and lengthens as they come out
+        return {"person": [(x + 0.08, 0.34, x + 0.08 + 0.025 + 0.035 * grown, 0.50 + 0.2 * grown, 0.8)]}
+
+    follow = CameraFollow(STAMP, epoch="post")
+    out = play(follow, 7000, scene)
+    told = [p for p in out if p["tracks"]]
+    assert {tr["id"] for p in told for tr in p["tracks"]} == {"Lpost-1"} and all(len(p["tracks"]) == 1 for p in told)
