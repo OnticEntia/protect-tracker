@@ -16,7 +16,10 @@ cards are back to Protect's own boxes until one fits again. The same when the
 local track is lost. Things Protect calls stationary are left to Protect: its
 box of a parked car is steadier than a fresh guess thirty times a second. And
 a local track is only bound while it is itself going somewhere, so a parked
-thing Protect calls moving for one report is not taken up either.
+thing Protect calls moving for one report is not taken up either. Nor is a
+thing small and far off: the detector finds it only now and then, so a box
+of ours would come and go where Protect's holds steady; it is taken up when
+it has come nearer, and handed back to Protect when it has gone small again.
 
 Protect's `stationary` is passed on as Protect said it. What our own tracker
 sees is a field of its own, `moving`: has the thing's middle gone anywhere in
@@ -198,6 +201,8 @@ class CameraFollow:
             ours = local.at(frame_time) if local is not None else None
             if mine.stationary or local is None:
                 self._unbind(mine, "parked" if mine.stationary else "lost")
+            elif box[3] - box[1] < FAR_HEIGHT * 0.8:
+                self._unbind(mine, "far")  # gone small into the distance: Protect's box from here on
             elif ours is not None and iou(ours, box) >= KEEP_IOU:
                 mine.misses = 0
             else:
@@ -218,6 +223,8 @@ class CameraFollow:
             mine = self.theirs[tid]
             if mine.local is not None or mine.kind is None or mine.stationary:
                 continue
+            if box[3] - box[1] < FAR_HEIGHT and mine.kind != "face":
+                continue  # small and far off: left to Protect until it is nearer
             for local in self.tracker.tracks.values():
                 if local.kind != mine.kind or local.id in taken or not local.moving():
                     continue

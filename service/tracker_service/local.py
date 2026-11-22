@@ -36,7 +36,8 @@ from .tracks import Track
 
 # kind -> (how sure the detector must be, the least height as a share of the picture)
 # (a person far off is small: the sharper look finds them from about a fortieth of the picture's height)
-SURE = {"person": (0.45, 0.025), "vehicle": (0.5, 0.04), "animal": (0.5, 0.04)}
+# (a vehicle that small is far down the road, found one moment and not the next: not told until it is nearer)
+SURE = {"person": (0.45, 0.025), "vehicle": (0.5, 0.06), "animal": (0.5, 0.04)}
 PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)

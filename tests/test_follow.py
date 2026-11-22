@@ -324,3 +324,20 @@ def test_a_small_thing_far_off_found_only_now_and_then_stays_one_track():
         for t in tracker.update(ms, {"vehicle": found}):
             ids.add(t.id)
     assert len(ids) == 1
+
+
+def test_small_and_far_off_is_left_to_protect_until_it_is_nearer():
+    follow = primed()
+    # a car comes up the road: small at first, growing
+    size = lambda ms: 0.03 + 0.00003 * ms  # noqa: E731 - its height: 3% of the picture, 6% at one second, 15% at four
+    car = lambda ms: (0.3 + 0.0001 * ms, 0.2, 0.3 + 0.0001 * ms + 2 * size(ms), 0.2 + size(ms))  # noqa: E731
+    out = run(follow, 4000, ours=lambda ms: {"vehicle": [car(ms) + (0.9,)]}, protect=lambda at: [theirs(at, "car", "vehicle", box=car(at))])
+    first = min(p["clockWall"] + STAMP - WALL0 for p in out)
+    assert 1000 <= first <= 1400 and follow.stats["bound"] == 1  # taken up once it is big enough to hold on to
+    # and one driving away is handed back when it has gone small
+    follow = primed()
+    away = lambda ms: car(4000 - ms)  # noqa: E731
+    out = run(follow, 4600, ours=lambda ms: {"vehicle": [away(ms) + (0.9,)]}, protect=lambda at: [theirs(at, "car", "vehicle", box=away(at))])
+    last = max(p["clockWall"] + STAMP - WALL0 for p in out)
+    # (Protect's report of the frame in which it has gone small comes half a second after that frame)
+    assert follow.stats["let_go"]["far"] == 1 and follow.stats["bound"] == 1 and 3400 <= last <= 4300
