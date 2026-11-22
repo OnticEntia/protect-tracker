@@ -131,9 +131,27 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         assert [tr["id"] for tr in (await client.receive_json())["event"]["tracks"]] == ["2"]
         send({"status": "disconnected"})
         assert (await client.receive_json())["event"] == {"status": "disconnected"}
-        await client.send_json({"id": 3, "type": "protect_tracker/live/subscribe", "entity": "camera.unknown"})
+
+        # on the service's own word: its own stream, nothing of Protect's passed on
+        with patch("custom_components.protect_tracker.camera_of", return_value="cam1"):
+            await client.send_json({"id": 7, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere", "mode": "local"})
+            assert (await client.receive_json())["success"]
+        assert (await client.receive_json())["event"]["status"] == "connected"
+        mine = {"source": "local", "clockWall": 1200.0, "clockStream": 600.0, "clockStreamRate": 1000,
+                "tracks": [{"id": "Lx-1", "coord": [1, 2, 3, 4], "objectType": "person", "local": True, "confirmed": False}]}
+        await service.ws.send_json({"type": "tracks", "camera": "cam1", "mode": "local", "packet": mine})
+        assert (await client.receive_json())["event"] == mine
+        send(WALKING)  # Protect's report goes to the default stream's listener only
+        got = await client.receive_json()
+        assert got["id"] == 2 and got["event"]["source"] == "local" and got["event"]["tracks"][0]["local"] is False
+        assert hub.seen["cam1"] == {"at": hub.seen["cam1"]["at"], "count": 1, "confirmed": False}  # a person, by the service's word
+        await client.send_json({"id": 8, "type": "unsubscribe_events", "subscription": 7})
+        assert (await client.receive_json())["success"]
+        await client.send_json({"id": 9, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere", "mode": "nonsense"})
+        assert (await client.receive_json())["success"] is False
+        await client.send_json({"id": 13, "type": "protect_tracker/live/subscribe", "entity": "camera.unknown"})
         assert (await client.receive_json())["error"]["code"] == "not_found"
-        await client.send_json({"id": 4, "type": "unsubscribe_events", "subscription": 2})
+        await client.send_json({"id": 14, "type": "unsubscribe_events", "subscription": 2})
         assert (await client.receive_json())["success"]
         assert hub.listeners == {}
 
@@ -204,5 +222,60 @@ async def test_always_on_keeps_every_camera_watched(hass, socket_enabled, unused
         hub._check()
         await asyncio.sleep(0.1)
         assert not [m for m in service.got if m["type"] == "sleep"]
+        await hass.config_entries.async_unload(entry.entry_id)
+    await service.runner.cleanup()
+
+
+class _Flags:
+    smart_detect_types = ["person"]
+
+
+class _Cam:
+    id, mac, name, feature_flags = "cam1", "AA:BB:CC:00:11:22", "Somewhere", _Flags()
+
+
+class _Api:
+    class bootstrap:  # noqa: N801
+        cameras = {"cam1": _Cam()}
+
+
+async def test_person_seen_sensor(hass, socket_enabled, unused_tcp_port):
+    service = Service()
+    await service.start(unused_tcp_port)
+    hass.config.components.update({"camera", "unifiprotect"})
+    entry = MockConfigEntry(domain=DOMAIN, options={"url": f"ws://127.0.0.1:{unused_tcp_port}/link", "stream": "medium", "always": True})
+    entry.add_to_hass(hass)
+    with patch("custom_components.protect_tracker._protect_api", return_value=_Api()), patch(
+        "custom_components.protect_tracker.binary_sensor._protect_api", return_value=_Api()
+    ), patch("custom_components.protect_tracker.async_get_stream_source", return_value=SOURCE), patch(
+        "custom_components.protect_tracker.stream_entity", return_value=("camera.somewhere", 1)
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        await asyncio.wait_for(service.connected.wait(), 5)
+        hub = hass.data[DOMAIN]
+        for _ in range(100):
+            if hub.link.connected:
+                break
+            await asyncio.sleep(0.02)
+        hub._check()
+        # with no Protect Detections at all the camera is watched all the same (always on)
+        assert (await service.wait_for("watch"))[0]["camera"] == "cam1"
+        entity = next(e for e in hass.states.async_entity_ids("binary_sensor") if "person_seen" in e)
+        hub._seen_changed("cam1")
+        await hass.async_block_till_done()
+        assert hass.states.get(entity).state == "off"
+        packet = {"source": "local", "clockWall": 1.0, "clockStream": 1.0, "tracks": [{"id": "Lx-1", "objectType": "person", "confirmed": True, "coord": [1, 2, 3, 4]}]}
+        await service.ws.send_json({"type": "tracks", "camera": "cam1", "mode": "local", "packet": packet})
+        for _ in range(100):
+            if hass.states.get(entity).state == "on":
+                break
+            await asyncio.sleep(0.02)
+        state = hass.states.get(entity)
+        assert state.state == "on" and state.attributes["count"] == 1 and state.attributes["confirmed"] is True
+        hub.seen["cam1"]["at"] -= 10  # nobody for a while
+        hub._check()
+        await hass.async_block_till_done()
+        assert hass.states.get(entity).state == "off"
         await hass.config_entries.async_unload(entry.entry_id)
     await service.runner.cleanup()
