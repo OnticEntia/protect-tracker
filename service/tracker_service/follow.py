@@ -98,7 +98,7 @@ class CameraFollow:
         self.tracker = LocalTracker()
         self.theirs: dict[str, _Theirs] = {}
         self.event: dict[str, Any] = {}
-        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "sent": 0, "faces": 0, "people_never_reported": 0}
+        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0}
         self.shift: float | None = None  # Protect's wall clock minus our own clock
         self.last_frame: tuple[float, dict[str, tuple]] | None = None  # the newest frame's time, and our boxes sent for it
         self.last_report: tuple[float, dict[str, tuple]] | None = None  # the newest report's frame time, and its boxes
@@ -168,13 +168,13 @@ class CameraFollow:
             local = self.tracker.tracks.get(mine.local)
             ours = local.at(frame_time) if local is not None else None
             if mine.stationary or local is None:
-                self._unbind(mine)
+                self._unbind(mine, "parked" if mine.stationary else "lost")
             elif ours is not None and iou(ours, box) >= KEEP_IOU:
                 mine.misses = 0
             else:
                 mine.misses += 1
                 if mine.misses >= MISSES:
-                    self._unbind(mine)
+                    self._unbind(mine, "disagreed")
 
         # new bindings: the best overlaps first, each local track for one of theirs
         taken = {t.local for t in self.theirs.values() if t.local is not None}
@@ -211,9 +211,10 @@ class CameraFollow:
         self.stats["sent"] += len(out)
         return out
 
-    def _unbind(self, mine: _Theirs) -> None:
+    def _unbind(self, mine: _Theirs, why: str) -> None:
         mine.local, mine.misses = None, 0
         self.stats["dropped"] += 1
+        self.stats["let_go"][why] += 1
 
     def _head_start(self, mine: _Theirs, local: Track) -> None:
         """How far ahead of Protect we were with this thing (noted once)."""
@@ -266,7 +267,7 @@ class CameraFollow:
                 continue
             local: Track | None = self.tracker.tracks.get(mine.local)
             if local is None:
-                self._unbind(mine)
+                self._unbind(mine, "lost")
                 continue
             if when - mine.reported > END_MS:
                 continue  # Protect no longer reports it
