@@ -140,9 +140,12 @@ class LocalTracker:
             pairs = []
             for t in tracks:
                 for j, box in enumerate(boxes):
-                    # a box where something stands is that thing's: not for a track going somewhere, nor for one from elsewhere
-                    if stood[j] is not None and (going[t.id] or iou(t.box, stood[j]["box"]) < PLACE_IOU):
-                        continue
+                    # a box where something stands is that thing's: only for a track that is there itself, and, if it
+                    # is going somewhere, one that started out there (the parked car driving off, not a car passing)
+                    if stood[j] is not None:
+                        place = stood[j]["box"]
+                        if iou(t.box, place) < PLACE_IOU or (going[t.id] and iou(t.born_box, place) < PLACE_IOU):
+                            continue
                     overlap = iou(expected[t.id], box)
                     if overlap >= MATCH_IOU:
                         pairs.append((overlap, t.id, j))

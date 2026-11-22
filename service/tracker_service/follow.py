@@ -46,6 +46,7 @@ from typing import Any
 
 from .clock import FeedClock
 from .detect import iou
+from .local import LocalView
 from .rtp import Unwrap
 from .tracks import LocalTracker, Track
 
@@ -106,8 +107,10 @@ class _Theirs:
 
 
 class CameraFollow:
-    def __init__(self, stamp_ms: float = -125.0) -> None:
+    def __init__(self, stamp_ms: float = -125.0, epoch: str = "0") -> None:
         self.stamp = float(stamp_ms)
+        self.local = LocalView(epoch)  # the same tracks, told on our own word (local.py)
+        self.local_packets: list[dict[str, Any]] = []  # what the last frame gave for those who asked for that
         self.clock = FeedClock()
         self.tracker = LocalTracker()
         self.theirs: dict[str, _Theirs] = {}
@@ -197,6 +200,11 @@ class CameraFollow:
                 if mine.misses >= MISSES or not local.moving():
                     self._unbind(mine, "disagreed")
 
+        for mine in self.theirs.values():  # Protect's details go with our track, and are kept up
+            local = self.tracker.tracks.get(mine.local) if mine.local is not None else None
+            if local is not None and mine.id in boxes:
+                self.local.attach(local, mine.id, mine.meta, mine.stationary)
+
         # new bindings: the best overlaps first, each local track for one of theirs
         taken = {t.local for t in self.theirs.values() if t.local is not None}
         pairs = []
@@ -225,6 +233,7 @@ class CameraFollow:
                 mine.was_followed = True
                 self.stats["theirs_followed"] += 1
             local = self.tracker.tracks[lid]
+            self.local.attach(local, mine.id, mine.meta, mine.stationary)
             self._head_start(mine, local)
             # what was found of it since that frame goes out now, in order
             start = max(frame_time, mine.sent)
@@ -236,6 +245,8 @@ class CameraFollow:
         return out
 
     def _unbind(self, mine: _Theirs, why: str) -> None:
+        if why == "parked" and mine.local is not None:
+            self.local.parked(mine.local)
         mine.local, mine.misses = None, 0
         self.stats["dropped"] += 1
         self.stats["let_go"][why] += 1
@@ -289,8 +300,10 @@ class CameraFollow:
         self.last_frame = (when, ours)
         if self.shift is None:
             self._tie(now_ms)
-            if self.shift is None:
-                return []  # followed all the same; nothing can go out before Protect has reported
+        told = self.local.frame(when, self.tracker.tracks, seen_tracks, self.tracker.ended)
+        self.local_packets = [self._packet(when, told)] if told else []
+        if self.shift is None:
+            return []  # followed all the same; in Protect's name nothing can go out before Protect has reported
         entries = []
         people = []
         for mine in self.theirs.values():
@@ -366,7 +379,12 @@ class CameraFollow:
 
     def _packet(self, when: float, tracks: list[dict[str, Any]]) -> dict[str, Any]:
         wall = when + (self.shift or 0.0) - self.stamp  # as Protect would have stamped these boxes
-        gap = (self.clock.wall or 0.0) - (self.clock.stream or 0.0)
+        if self.shift is None:
+            # Protect has said nothing yet, so its wall clock is not known: ours stands in for it. The stream
+            # clock is the frames' own (what a card matches the picture with), so this is still exact.
+            gap = wall - ((self._unwrap._last or 0) / 90.0 - (self._newest() - when) - self.stamp)  # noqa: SLF001
+        else:
+            gap = (self.clock.wall or 0.0) - (self.clock.stream or 0.0)
         return {
             "source": "local",
             "clockWall": round(wall, 1),
