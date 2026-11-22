@@ -21,7 +21,7 @@ class SquareFinder:
 
     device, model, face = "test", "square", None
 
-    def look(self, frame, far: bool = False) -> dict:
+    def look(self, frame, far: bool = False, faces: bool = True) -> dict:
         img = picture(frame)
         cols = np.where(img[120, :, 1] > 128)[0]
         if not len(cols):
@@ -94,6 +94,7 @@ def test_boxes_for_every_frame_under_protects_id():
     for message in got:
         assert message["camera"] == "c1"
         packet = message["packet"]
+        assert packet["fpsFloor"] == 20 and packet["fpsOk"] is True and "fps" in packet  # how it is being kept up with
         (tr,) = packet["tracks"]
         assert tr["id"] == "T7" and tr["objectType"] == "person" and tr["zones"] == [2] and tr["local"] and packet["eventId"] == "e9"
         i = (packet["clockWall"] - 125 - wall0) * 30 / 1000  # which frame this box says it is of (stamped as Protect stamps)

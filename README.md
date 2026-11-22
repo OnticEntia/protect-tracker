@@ -145,6 +145,15 @@ should then use Protect Detections' command as before.
 Use it as a trigger in your own automations where being early matters more than being certain;
 Protect's own detections remain the certain ones.
 
+## Frame rate
+
+Every frame the camera sends is looked at. Whatever happens, a watched camera has at least **20 frames
+a second** looked at (`TRACKER_MIN_FPS`; it can be raised, not lowered). When the detector falls behind
+(more cameras, a card busy with something else) the extras give way first: the sharper look for people
+far off, then the faces; a frame is only let go once those are gone. If the floor still cannot be held
+that is said, not hidden: every packet carries `fps` (frames looked at a second), `fpsFloor` and `fpsOk`,
+and `protect_tracker/status` has the same per camera with what was left out.
+
 ## People far off
 
 Five times a second the service also takes a sharper look for people: the picture at twice the

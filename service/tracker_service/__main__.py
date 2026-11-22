@@ -10,6 +10,7 @@ from pathlib import Path
 from aiohttp import web
 
 from .camera import Engine
+from .pace import MIN_FPS
 from .server import Service
 
 
@@ -25,13 +26,17 @@ def main() -> None:
                     help="while nothing moves, look at one frame in this many (1: every frame; 6: five a second)")
     ap.add_argument("--far-every", type=int, default=int(os.environ.get("TRACKER_FAR_EVERY", "6")),
                     help="the sharper look for people far off, on one frame in this many")
+    ap.add_argument("--min-fps", type=float, default=float(os.environ.get("TRACKER_MIN_FPS", str(MIN_FPS))),
+                    help=f"the floor: frames of each camera looked at a second, whatever else gives way ({MIN_FPS} at least)")
     args = ap.parse_args()
+    if args.min_fps < MIN_FPS:
+        ap.error(f"the floor (--min-fps / TRACKER_MIN_FPS) cannot be under {MIN_FPS} frames a second")
     logging.basicConfig(level=os.environ.get("TRACKER_LOG", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     models = Path(args.models)
     if not (models / f"yolox_{args.model}.onnx").exists():
         raise SystemExit(f"No yolox_{args.model}.onnx in the models folder (see the README for where to get it)")
-    engine = Engine(models, args.model, faces=not args.no_faces, far=not args.no_far, idle_every=args.idle_every, far_every=args.far_every)
+    engine = Engine(models, args.model, faces=not args.no_faces, far=not args.no_far, idle_every=args.idle_every, far_every=args.far_every, min_fps=args.min_fps)
     logging.info("Detector yolox_%s on the %s%s; faces %s; far look %s", args.model, engine.device, " (fast copy)" if engine.detector.fast else "",
                  "on" if engine.face else "off", "on" if engine.far else "off")
     web.run_app(Service(engine).app(), host=args.host, port=args.port, print=None)
