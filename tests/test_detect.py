@@ -42,25 +42,28 @@ def test_iou():
     assert abs(iou((0, 0, 2, 2), (1, 0, 3, 2)) - 1 / 3) < 1e-9
 
 
-def test_far_look_tiles_map_back_to_the_whole_picture():
-    from tracker_service.camera import Engine, merge_far
+def test_the_sharp_look_takes_the_place_of_the_ordinary_one():
+    from tracker_service.camera import Engine
 
-    class OneBox:
-        """A detector that finds a person in the middle of whatever it is shown."""
+    class Sized:
+        def __init__(self, w, h):
+            self.w, self.h, self.seen = w, h, []
 
-        def detect(self, tile, min_conf, kinds):
-            assert tile.shape == (360, 640, 3) and min_conf == 0.6
-            return {"person": [(0.4, 0.4, 0.6, 0.6, 0.9)]}
+        def detect(self, picture, min_conf, kinds):
+            self.seen.append(picture.shape)
+            return {"person": [], "vehicle": [(0.1, 0.1, 0.2, 0.2, 0.9)], "animal": []}
+
+    import threading
 
     engine = Engine.__new__(Engine)
-    engine.detector, engine.size = OneBox(), (640, 360)
+    engine.detector, engine.wide, engine.face, engine.min_conf, engine._lock = Sized(640, 360), Sized(1280, 720), None, 0.3, threading.Lock()
 
     class Frame:
         def to_ndarray(self, format, width, height):  # noqa: A002
             return np.zeros((height, width, 3), np.uint8)
 
-    boxes = engine.far_people(Frame())
-    assert len(boxes) == 4
-    assert np.allclose(boxes[0][:4], (0.2, 0.2, 0.3, 0.3)) and np.allclose(boxes[3][:4], (0.7, 0.7, 0.8, 0.8))
-    merged = merge_far([(0.19, 0.19, 0.31, 0.31, 0.8)], boxes)  # the first is one the whole-picture look had already
-    assert len(merged) == 4 and merged[0][4] == 0.8
+    assert engine.look(Frame())["vehicle"] and engine.detector.seen == [(360, 640, 3)] and engine.wide.seen == []
+    assert engine.look(Frame(), far=True)["vehicle"] and engine.wide.seen == [(720, 1280, 3)] and len(engine.detector.seen) == 1
+    engine.wide = None  # no such model file: the ordinary look, whatever is asked
+    engine.look(Frame(), far=True)
+    assert len(engine.detector.seen) == 2

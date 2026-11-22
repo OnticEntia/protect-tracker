@@ -149,17 +149,21 @@ Protect's own detections remain the certain ones.
 
 Every frame the camera sends is looked at. Whatever happens, a watched camera has at least **20 frames
 a second** looked at (`TRACKER_MIN_FPS`; it can be raised, not lowered). When the detector falls behind
-(more cameras, a card busy with something else) the extras give way first: the sharper look for people
-far off, then the faces; a frame is only let go once those are gone. If the floor still cannot be held
+(more cameras, a card busy with something else) the extras give way first: the sharp look (the
+ordinary one stands in), then the faces; a frame is only let go once those are gone. If the floor still cannot be held
 that is said, not hidden: every packet carries `fps` (frames looked at a second), `fpsFloor` and `fpsOk`,
 and `protect_tracker/status` has the same per camera with what was left out.
 
-## People far off
+## The sharp look
 
-Five times a second the service also takes a sharper look for people: the picture at twice the
-detector's size, cut into four tiles, each looked at on its own, so someone far away is four times
-the pixels. It costs about as much as five ordinary looks each time. `TRACKER_FAR_EVERY` sets how often
-(one frame in so many; 6 by default), `TRACKER_FAR=0` turns it off.
+The detector is made for a picture 640 across. Where the models folder also has its copy for a picture
+twice as wide (`wide1280/`, made with `python -m tools.make_fast_models <models> --width 1280 --out
+wide1280`), the service looks at that instead: everything is four times the pixels, which is what finds
+people far off and puts a tighter box on everything else. It takes about three times as long (24 ms
+against 8 on an RTX 3070 with YOLOX-m), which one camera at 30 frames a second has room for on every
+frame. With more cameras the ordinary look stands in for it on the frames where it does not fit (see
+"Frame rate": the floor comes first). `TRACKER_FAR_EVERY` asks for it on one frame in so many only;
+`TRACKER_FAR=0` turns it off.
 
 ## Development
 

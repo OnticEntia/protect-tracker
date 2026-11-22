@@ -9,7 +9,8 @@ waiting: a camera's frames arrive a few at a time, and a far look takes
 longer than a frame lasts, so two or three waiting for a moment is how it
 goes when all is well.
 
-  1. the sharper look for people far off is left out of this frame;
+  1. the sharp look (the picture at twice the size, which is what finds
+     people far off) gives way to the ordinary one for this frame;
   2. the faces are;
   3. only then is a frame not looked at at all, and only while the rate is
      still above the floor, or once the detector is a second behind (looking
@@ -31,7 +32,7 @@ from __future__ import annotations
 from collections import deque
 
 MIN_FPS = 20  # the floor's own floor: it cannot be set lower
-LATE_FAR = 0.10  # a frame that has waited this long (seconds) gets no far look
+LATE_FAR = 0.06  # a frame that has waited this long (seconds) gets the ordinary look, not the sharp one
 LATE_FACES = 0.20  # ... and no faces
 LATE_SKIP = 0.30  # ... and may be let go unlooked (while the rate is above the floor)
 LATE_MUST = 1.0  # ... and must be: catching up comes first
@@ -39,7 +40,7 @@ WINDOW = 2.0  # seconds the rates are taken over
 
 
 class Pace:
-    def __init__(self, min_fps: float = MIN_FPS, idle_every: int = 1, far_every: int = 6) -> None:
+    def __init__(self, min_fps: float = MIN_FPS, idle_every: int = 1, far_every: int = 1) -> None:
         if min_fps < MIN_FPS:
             raise ValueError(f"the floor cannot be under {MIN_FPS} frames a second")
         self.min_fps = float(min_fps)

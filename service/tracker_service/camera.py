@@ -18,10 +18,8 @@ import threading
 import time
 from typing import Any
 
-import numpy as np
-
 from .check import H as CHECK_H, W as CHECK_W, PictureCheck
-from .detect import Detector, FaceDetector, find_faces, iou
+from .detect import Detector, FaceDetector, find_faces
 from .follow import CameraFollow
 from .pace import MIN_FPS, Pace
 from .rtp import Depacketizer
@@ -32,9 +30,8 @@ log = logging.getLogger(__name__)
 
 IDLE_EVERY = 1  # while nothing moves, one frame in this many is looked at. 1: every frame, always (the first
 # sight of someone is then never later than a frame). More is only taken as far as the floor allows (pace.py)
-FAR_EVERY = 6  # one frame in this many also gets the sharper look for people far off
-FAR_SIZE = (1280, 720)  # the picture that look is made on, cut into four tiles of the detector's own size
-FAR_CONF = 0.6  # what a sighting in a tile needs (a tile shows less of the scene to judge by)
+FAR_EVERY = 1  # one frame in this many gets the sharp look (the picture at twice the size) in place of the ordinary one
+WIDE = "wide1280"  # the folder (in the models folder) of the detector's copy for that: a picture 1280 across
 WAITING = 600  # pictures and reports that may wait at most
 
 
@@ -58,7 +55,11 @@ class Engine:
         self.model = model
         self.min_conf, self.face_conf = min_conf, face_conf
         self.size = (self.detector.w, self.detector.h)
-        self.far = far and self.size == (FAR_SIZE[0] // 2, FAR_SIZE[1] // 2)  # the tiles must be the detector's size
+        # the sharp look: the same model made for a picture twice as wide (tools/make_fast_models.py --width 1280),
+        # where that file is there. Someone far off is four times the pixels in it; so is everything else.
+        wide = Path(models) / WIDE / f"yolox_{model}.onnx"
+        self.wide = Detector(wide) if far and wide.exists() else None
+        self.far = self.wide is not None
         self._lock = threading.Lock()
 
     @property
@@ -67,39 +68,15 @@ class Engine:
 
     def look(self, frame, far: bool = False, faces: bool = True) -> dict[str, list]:
         """What is in a decoded frame: {kind: [(x1, y1, x2, y2, score)]}.
-        `far`: also the sharper look for people far off (far_people);
+        `far`: the sharp look, at twice the size, in place of the ordinary one;
         `faces`: also the faces of the people found."""
-        small = picture(frame, *self.size)
+        detector = self.wide if far and self.wide is not None else self.detector
+        scaled = picture(frame, detector.w, detector.h)
         with self._lock:
-            found = self.detector.detect(small, self.min_conf, ("person", "vehicle", "animal"))
-            if far and self.far:
-                found["person"] = merge_far(found["person"], self.far_people(frame))
+            found = detector.detect(scaled, self.min_conf, ("person", "vehicle", "animal"))
             if faces and self.face is not None and found["person"]:
                 found["face"] = find_faces(self.face, picture(frame), found["person"], self.face_conf)
         return found
-
-    def far_people(self, frame) -> list:
-        """People far off: the picture at twice the detector's size, cut into
-        four tiles, each looked at on its own, so someone far away is four
-        times the pixels they are in the whole-picture look."""
-        big = picture(frame, *FAR_SIZE)
-        w, h = self.size
-        out = []
-        for ty in (0, h):
-            for tx in (0, w):
-                tile = np.ascontiguousarray(big[ty : ty + h, tx : tx + w])
-                for x1, y1, x2, y2, score in self.detector.detect(tile, FAR_CONF, ("person",))["person"]:
-                    out.append(((tx + x1 * w) / FAR_SIZE[0], (ty + y1 * h) / FAR_SIZE[1], (tx + x2 * w) / FAR_SIZE[0], (ty + y2 * h) / FAR_SIZE[1], score))
-        return out
-
-
-def merge_far(people: list, far: list) -> list:
-    """The whole-picture look's people, and those only the sharper look found."""
-    out = list(people)
-    for box in far:
-        if all(iou(box, other) < 0.3 for other in out):
-            out.append(box)
-    return out
 
 
 class CameraWorker(threading.Thread):

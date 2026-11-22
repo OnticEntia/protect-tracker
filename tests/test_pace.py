@@ -7,8 +7,9 @@ from tracker_service.pace import MIN_FPS, Pace
 FRAME = 1 / 30
 
 
-def run(cameras: int, seconds: float = 20.0, look=0.007, far=0.031, faces=0.008, person=True, busy=True, other=0.0, **pace):
-    """Cameras sending 30 frames a second share one detector (one look at a time). `other`: the share of the
+def run(cameras: int, seconds: float = 20.0, look=0.008, far=0.016, faces=0.008, person=True, busy=True, other=0.0, **pace):
+    """Cameras sending 30 frames a second share one detector (one look at a time). An ordinary look takes
+    `look`; the sharp one `far` more (8 and 24 ms as measured). `other`: the share of the
     card taken by something else. Returns per camera: (the lowest rate over any two seconds after the start, its Pace)."""
     paces = [Pace(**pace) for _ in range(cameras)]
     steps = int(seconds / FRAME)
@@ -49,11 +50,18 @@ def test_one_and_two_cameras_hold_every_frame(cameras):
         assert pace.shed["frames"] == 0 and not state["below"] and state["fps"] >= 29
 
 
-def test_four_cameras_give_up_the_extras_before_any_frame():
+def test_three_cameras_give_up_the_extras_before_any_frame():
+    for low, pace, state in run(3, person=False):
+        assert low >= 29, f"fell to {low}"
+        assert pace.shed["far"] > 0 and pace.shed["frames"] == 0  # the sharp look went; no frame did
+        assert not state["below"]
+
+
+def test_four_cameras_with_people_everywhere_hold_the_floor():
+    """More than fits at 30: frames are let go, but never under the floor, and so it is not called below."""
     for low, pace, state in run(4):
         assert low >= MIN_FPS, f"fell to {low}"
-        assert pace.shed["far"] > 0 and pace.shed["frames"] == 0  # the far look and the faces went; no frame did
-        assert not state["below"]
+        assert pace.shed["far"] > 0 and pace.shed["faces"] > 0 and not state["below"]
 
 
 def test_a_busy_card_sheds_but_keeps_the_floor():
@@ -97,7 +105,10 @@ def test_frames_arriving_in_bunches_cost_nothing():
     assert pace.shed["faces"] == 0 and pace.shed["far"] == 0 and pace.shed["frames"] == 0
 
 
-def test_two_cameras_with_nobody_about_keep_everything():
-    """Vehicles only (no faces to find): two cameras have room for every frame and every far look."""
-    for low, pace, state in run(2, person=False):
-        assert low >= 29 and pace.shed == {"far": 0, "faces": 0, "frames": 0, "idle": 0}
+def test_two_cameras_keep_every_frame_and_share_the_sharp_look():
+    """Two cameras: every frame of both is looked at; the sharp look gives way to the ordinary one as needed."""
+    results = run(2, person=False)
+    for low, pace, state in results:
+        assert low >= 29 and pace.shed["frames"] == 0 and pace.shed["faces"] == 0
+    # (two sharp looks do not fit in one frame's time: the ordinary look stands in where they do not)
+    assert any(pace.shed["far"] > 0 for _, pace, _ in results)
