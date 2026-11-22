@@ -24,8 +24,8 @@ def run(cameras: int, seconds: float = 20.0, look=0.007, far=0.031, faces=0.008,
             queues[arrivals[nxt][1]].append(arrivals[nxt][0])
             nxt += 1
         c = min((c for c in range(cameras) if queues[c]), key=lambda c: queues[c][0])  # whoever has waited longest
-        queues[c].pop(0)
-        plan = paces[c].plan(len(queues[c]), busy, t)
+        came = queues[c].pop(0)
+        plan = paces[c].plan(t - came, busy, t)
         cost = 0.001  # decoding
         if plan["look"]:
             cost += look + (far if plan["far"] else 0) + (faces if plan["faces"] and person else 0)
@@ -76,5 +76,28 @@ def test_the_quiet_time_saving_stops_at_the_floor():
 
 def test_first_seconds_are_not_called_below():
     pace = Pace()
-    pace.plan(0, True, 100.0)
+    pace.plan(0.0, True, 100.0)
     assert not pace.state(100.1)["below"]
+
+
+def test_one_camera_keeps_its_faces_and_far_looks():
+    """All is well on one camera: a far look takes longer than a frame lasts and a frame or two wait behind it
+    for a moment. That is not falling behind, and nothing is to be left out for it."""
+    (low, pace, state), = run(1)
+    assert pace.shed == {"far": 0, "faces": 0, "frames": 0, "idle": 0} and low >= 29
+
+
+def test_frames_arriving_in_bunches_cost_nothing():
+    pace = Pace()
+    t = 0.0
+    for i in range(600):  # four frames at once every 133 ms, each looked at in 11 ms
+        late = (i % 4) * 0.011
+        t = (i // 4) * 0.1333 + late
+        pace.plan(late, True, t)
+    assert pace.shed["faces"] == 0 and pace.shed["far"] == 0 and pace.shed["frames"] == 0
+
+
+def test_two_cameras_with_nobody_about_keep_everything():
+    """Vehicles only (no faces to find): two cameras have room for every frame and every far look."""
+    for low, pace, state in run(2, person=False):
+        assert low >= 29 and pace.shed == {"far": 0, "faces": 0, "frames": 0, "idle": 0}

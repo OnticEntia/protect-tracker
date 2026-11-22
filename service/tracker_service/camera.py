@@ -160,7 +160,7 @@ class CameraWorker(threading.Thread):
             return
         for rtp, frame in self.decoder.decode(unit):
             now = time.monotonic()
-            plan = self.pace.plan(self.items.qsize(), self.follow.busy(), now)
+            plan = self.pace.plan(max(0.0, time.time() - at / 1000.0), self.follow.busy(), now)
             self._pace_state = self.pace.state(now)
             if not plan["look"]:
                 continue

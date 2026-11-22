@@ -3,7 +3,11 @@
 The rule that comes first: a camera being watched has at least `min_fps` of
 its frames looked at every second (20 unless set higher; it cannot be set
 lower), idle or busy, however many cameras share the card. Everything else
-gives way to that, in this order, as the detector falls behind:
+gives way to that, in this order, as the detector falls behind. Behind is
+told by how long a frame has waited since it came, not by how many are
+waiting: a camera's frames arrive a few at a time, and a far look takes
+longer than a frame lasts, so two or three waiting for a moment is how it
+goes when all is well.
 
   1. the sharper look for people far off is left out of this frame;
   2. the faces are;
@@ -27,10 +31,10 @@ from __future__ import annotations
 from collections import deque
 
 MIN_FPS = 20  # the floor's own floor: it cannot be set lower
-BEHIND_FAR = 1  # frames waiting beyond which the far look is left out
-BEHIND_FACES = 2  # ... and the faces
-BEHIND_SKIP = 4  # ... and a frame may be let go unlooked (while the rate is above the floor)
-BEHIND_LATE = 30  # ... and must be (a second behind: catching up comes first)
+LATE_FAR = 0.10  # a frame that has waited this long (seconds) gets no far look
+LATE_FACES = 0.20  # ... and no faces
+LATE_SKIP = 0.30  # ... and may be let go unlooked (while the rate is above the floor)
+LATE_MUST = 1.0  # ... and must be: catching up comes first
 WINDOW = 2.0  # seconds the rates are taken over
 
 
@@ -65,8 +69,8 @@ class Pace:
         self._trim(now)
         return len(self._looked) / self._span(now)
 
-    def plan(self, backlog: int, busy: bool, now: float) -> dict[str, bool]:
-        """A frame has come and `backlog` more are waiting behind it. What is
+    def plan(self, late: float, busy: bool, now: float) -> dict[str, bool]:
+        """A frame's turn has come, `late` seconds after it arrived. What is
         to be done with it: {"look", "far", "faces"}."""
         if self.started is None:
             self.started = now
@@ -76,7 +80,7 @@ class Pace:
         # (would letting this one go leave the last second's looks under the floor?)
         last_second = sum(1 for t in self._looked if t > now - 1.0)
         room = last_second + 1 > self.min_fps and now - self.started >= 1.0
-        if backlog > BEHIND_LATE or (backlog > BEHIND_SKIP and room):
+        if late > LATE_MUST or (late > LATE_SKIP and room):
             self.shed["frames"] += 1
             return {"look": False, "far": False, "faces": False}
         if not busy and self.idle_every > 1:
@@ -85,8 +89,8 @@ class Pace:
                 self.shed["idle"] += 1
                 return {"look": False, "far": False, "faces": False}
         far_due = self._count % self.far_every == 0
-        far = far_due and backlog <= BEHIND_FAR and (rate >= self.min_fps or now - self.started < 1.0)
-        faces = backlog <= BEHIND_FACES
+        far = far_due and late <= LATE_FAR and (rate >= self.min_fps or now - self.started < 1.0)
+        faces = late <= LATE_FACES
         if far_due and not far:
             self.shed["far"] += 1
         if not faces:
