@@ -42,6 +42,7 @@ PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)
 TRAVEL_OWN = 0.5  # ... and at least this share of its own smaller side
+GONE_SMALL = 0.7  # a told vehicle or animal under this share of its kind's least height is left out again
 
 
 def _middle(box) -> tuple:
@@ -138,6 +139,8 @@ class LocalView:
                     self.stats["confirmed"] += 1
             elif t.kind != "person" and not t.moving() and self.standing(t.kind, t.box) is not None:
                 continue  # it has come to rest where things stand: nothing to follow until it moves again
+            elif t.kind != "person" and box[3] - box[1] < GONE_SMALL * SURE[t.kind][1]:
+                continue  # it has gone small into the distance: found one moment and not the next from here on
             entries.append(self._entry(t, told, box))
             if t.kind == "person":
                 people.append((told, box))

@@ -160,10 +160,7 @@ def test_followed_before_protect_says_anything():
     assert run(follow, 2000) == [] and len(follow.tracker.tracks) == 1
     out = run(follow, 4000, start=2000, protect=lambda at: [theirs(at)] if at >= 1500 else None)
     assert out and follow.stats["bound"] == 1
-    head = follow.head_start()["person"]
-    assert head["n"] == 0 and head["n_all"] == 1  # it was first seen in the middle of the picture: not counted as coming in
-    follow.head["person"][0]["entered"] = True
-    head = follow.head_start()["person"]
+    head = follow.head_start()["person"]  # (a person counts wherever they were first seen)
     assert head["n"] == 1 and 1400 <= head["frames_ms"] <= 1600  # seen from 0; Protect's first report is of the frame at 1500
     assert 1900 <= head["told_ms"] <= 2100  # ... and reached us half a second after that
     for p in out:

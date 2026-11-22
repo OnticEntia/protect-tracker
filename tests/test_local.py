@@ -181,3 +181,19 @@ def test_a_person_standing_still_stays_told():
     out = play(follow, 12000, lambda ms: where(min(ms, 1500)))
     told = [frame_ms(p) for p in out if p["tracks"]]
     assert told and max(told) > 11900 and out[-1]["tracks"][0]["moving"] is False
+
+
+def test_a_car_driving_off_into_the_distance_is_let_go_when_it_is_small():
+    follow = CameraFollow(STAMP, epoch="d1")
+    h = lambda ms: max(0.01, 0.16 - 0.00004 * ms)  # noqa: E731 - its height: 16% of the picture, 4% after three seconds
+    car = lambda ms: (0.2 + 0.0001 * ms, 0.3, 0.2 + 0.0001 * ms + 2 * h(ms), 0.3 + h(ms))  # noqa: E731
+    out = play(follow, 6000, lambda ms: {"vehicle": [car(ms) + (0.9,)]})
+    told = [frame_ms(p) for p in out if p["tracks"]]
+    assert told and min(told) < 700 and 2800 <= max(told) <= 3200  # until it is under about 4% of the picture's height
+
+
+def test_every_person_counts_for_the_head_start():
+    follow = CameraFollow(STAMP, epoch="h1")
+    play(follow, 4000, where, lambda at: [theirs(at)] if at >= 1500 else None)
+    head = follow.head_start()["person"]
+    assert head["n"] == 1 and 1400 <= head["frames_ms"] <= 1600

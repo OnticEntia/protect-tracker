@@ -385,8 +385,9 @@ class CameraFollow:
     def head_start(self) -> dict[str, Any]:
         out = {}
         for kind, all_rows in self.head.items():
-            # only things that came into view: one we had all along (a parked car setting off) would count for far too much
-            rows = [r for r in all_rows if r.get("entered")]
+            # vehicles: only those that came into view; one we had all along (a parked car setting off) would count
+            # for far too much. People are never parked: every one counts.
+            rows = [r for r in all_rows if r.get("entered") or kind in ("person", "face")]
             out[kind] = {
                 "n": len(rows),
                 "n_all": len(all_rows),
