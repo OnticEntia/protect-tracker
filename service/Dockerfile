@@ -12,7 +12,7 @@ RUN --mount=type=bind,source=.,target=/src \
 COPY tracker_service ./tracker_service
 
 # No footage is stored: the service has nowhere to write, and nothing in it writes.
-ENV PYTHONUNBUFFERED=1 TRACKER_HOST=0.0.0.0 TRACKER_PORT=8791 TRACKER_MODELS=/models
+ENV PYTHONUNBUFFERED=1 ORT_DISABLE_TELEMETRY=1 TRACKER_HOST=0.0.0.0 TRACKER_PORT=8791 TRACKER_MODELS=/models
 USER 1000:1000
 EXPOSE 8791
 CMD ["python", "-m", "tracker_service"]

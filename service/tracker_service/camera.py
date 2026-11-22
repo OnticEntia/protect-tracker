@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Any
 
+from .check import H as CHECK_H, W as CHECK_W, PictureCheck
 from .detect import Detector, FaceDetector, find_faces
 from .follow import CameraFollow
 from .rtp import Depacketizer
@@ -61,6 +62,7 @@ class CameraWorker(threading.Thread):
         super().__init__(daemon=True)
         self.engine = engine
         self.follow = CameraFollow(stamp_ms)
+        self.check = PictureCheck()
         self.emit = emit
         self.items: queue.Queue = queue.Queue(maxsize=WAITING)
         self.decoder: Decoder | None = None
@@ -103,6 +105,8 @@ class CameraWorker(threading.Thread):
         if item[0] == "report":
             for packet in self.follow.report(item[1], item[2]):
                 self.emit(packet)
+            if self.follow.last_report is not None:
+                self.check.report(*self.follow.last_report)
             return
         unit, at = item
         if self.decoder is None:
@@ -115,8 +119,12 @@ class CameraWorker(threading.Thread):
             found = self.engine.look(frame)
             self.look_ms.append((time.perf_counter() - started) * 1000)
             self.frame_times.append(time.monotonic())
+            self.follow.last_frame = None
             for packet in self.follow.frame(rtp, found, at):
                 self.emit(packet)
+            if self.follow.last_frame is not None:  # the picture check: numbers only, the small picture is dropped again
+                when, ours = self.follow.last_frame
+                self.check.frame(when, picture(frame, CHECK_W, CHECK_H)[:, :, 1], ours)
 
     def state(self) -> dict[str, Any]:
         times = list(self.frame_times)
@@ -125,7 +133,7 @@ class CameraWorker(threading.Thread):
         looks = sorted(self.look_ms)
         return {
             "codec": self.codec, "fps": round(fps, 1), "look_ms": round(looks[len(looks) // 2], 1) if looks else None,
-            "skipped": self.skipped, "lost": self.lost, **self.follow.stats,
+            "skipped": self.skipped, "lost": self.lost, **self.follow.stats, "check": self.check.result(),
         }
 
 

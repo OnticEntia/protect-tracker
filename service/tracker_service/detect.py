@@ -15,9 +15,13 @@ Boxes are (x1, y1, x2, y2, score) in 0-1 units of the picture.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
+
+# The runtime can report usage to its maker. Not from here: switched off before it is loaded, and again when it is.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 log = logging.getLogger(__name__)
 

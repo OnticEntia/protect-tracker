@@ -71,6 +71,8 @@ class CameraFollow:
         self.theirs: dict[str, _Theirs] = {}
         self.event: dict[str, Any] = {}
         self.stats = {"frames": 0, "untimed": 0, "reports": 0, "bound": 0, "dropped": 0, "sent": 0}
+        self.last_frame: tuple[float, dict[str, tuple]] | None = None  # the newest frame's time, and our boxes sent for it
+        self.last_report: tuple[float, dict[str, tuple]] | None = None  # the newest report's frame time, and its boxes
 
     # ------------------------------------------------------------- reports
 
@@ -97,6 +99,7 @@ class CameraFollow:
             boxes[tid] = to_box(tr["coord"])
         for tid in [tid for tid, t in self.theirs.items() if frame_time - t.reported > END_MS]:
             del self.theirs[tid]
+        self.last_report = (frame_time, boxes)
 
         # bindings that still hold, and those that don't
         for tid, box in boxes.items():
@@ -162,6 +165,8 @@ class CameraFollow:
         self.stats["frames"] += 1
         seen = {t.id for t in self.tracker.update(when, found)}
         entries = []
+        ours: dict[str, tuple] = {}
+        self.last_frame = (when, ours)
         for mine in self.theirs.values():
             if mine.local is None or when <= mine.sent:
                 continue
@@ -178,6 +183,7 @@ class CameraFollow:
             else:
                 continue
             entries.append(self._entry(mine, box))
+            ours[mine.id] = tuple(box)
             mine.sent = when
         if not entries:
             return []
