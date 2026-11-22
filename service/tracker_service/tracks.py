@@ -68,7 +68,7 @@ class Track:
         newest_t, newest = hist[-1]
         for t, box in hist:
             if t >= newest_t - within_ms:
-                return abs((box[0] + box[2]) - (newest[0] + newest[2])) / 2 + abs((box[1] + box[3]) - (newest[1] + newest[3])) / 2 >= least
+                return bool(abs((box[0] + box[2]) - (newest[0] + newest[2])) / 2 + abs((box[1] + box[3]) - (newest[1] + newest[3])) / 2 >= least)
         return False
 
     def at(self, when: float, slack: float = 45.0) -> tuple | None:

@@ -337,7 +337,7 @@ class CameraFollow:
                     if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
                         entries.append({
                             "id": f"{mine.id}:face", "coord": to_coord(face.box), "objectType": "face",
-                            "confidence": round(face.score * 100), "stationary": mine.stationary, "moving": face.moving(),
+                            "confidence": int(round(float(face.score) * 100)), "stationary": mine.stationary, "moving": face.moving(),
                             "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True, "of": mine.id,
                         })
                         self.stats["faces"] += 1

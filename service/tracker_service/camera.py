@@ -32,6 +32,14 @@ IDLE_EVERY = 6  # while nothing moves, one frame in this many is looked at (five
 WAITING = 600  # pictures and reports that may wait at most
 
 
+def _base36(n: int) -> str:
+    digits, out = "0123456789abcdefghijklmnopqrstuvwxyz", ""
+    while n:
+        n, r = divmod(n, 36)
+        out = digits[r] + out
+    return out or "0"
+
+
 class Engine:
     """The models, shared by the cameras (one look at a time)."""
 
@@ -59,10 +67,11 @@ class Engine:
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, engine, stamp_ms: float, emit: Callable[[dict[str, Any]], None]) -> None:
+    def __init__(self, engine, stamp_ms: float, emit: Callable[[dict[str, Any], str], None]) -> None:
         super().__init__(daemon=True)
         self.engine = engine
-        self.follow = CameraFollow(stamp_ms)
+        # (the time it started is part of its own track ids, so they are not used again after a restart)
+        self.follow = CameraFollow(stamp_ms, epoch=_base36(int(time.time())))
         self.check = PictureCheck()
         self.emit = emit
         self.items: queue.Queue = queue.Queue(maxsize=WAITING)
@@ -107,7 +116,7 @@ class CameraWorker(threading.Thread):
             return
         if item[0] == "report":
             for packet in self.follow.report(item[1], item[2]):
-                self.emit(packet)
+                self.emit(packet, "auto")
             if self.follow.last_report is not None:
                 self.check.report(*self.follow.last_report)
             return
@@ -128,7 +137,9 @@ class CameraWorker(threading.Thread):
             self.frame_times.append(time.monotonic())
             self.follow.last_frame = None
             for packet in self.follow.frame(rtp, found, at):
-                self.emit(packet)
+                self.emit(packet, "auto")  # in Protect's name: what Protect reported, refined
+            for packet in self.follow.local_packets:
+                self.emit(packet, "local")  # on our own word
             if self.follow.last_frame is not None:  # the picture check: numbers only, the small picture is dropped again
                 when, ours = self.follow.last_frame
                 self.check.frame(when, picture(frame, CHECK_W, CHECK_H)[:, :, 1], ours)
@@ -141,14 +152,14 @@ class CameraWorker(threading.Thread):
         return {
             "codec": self.codec, "fps": round(fps, 1), "look_ms": round(looks[len(looks) // 2], 1) if looks else None,
             "skipped": self.skipped, "idle_skipped": self.idle_skipped, "lost": self.lost, **self.follow.stats,
-            "check": self.check.result(), "head_start": self.follow.head_start(),
+            "check": self.check.result(), "head_start": self.follow.head_start(), "local": dict(self.follow.local.stats),
         }
 
 
 class Camera:
     """A camera while it is watched."""
 
-    def __init__(self, engine, source: str, stamp_ms: float, emit: Callable[[dict[str, Any]], None]) -> None:
+    def __init__(self, engine, source: str, stamp_ms: float, emit: Callable[[dict[str, Any], str], None]) -> None:
         self.worker = CameraWorker(engine, stamp_ms, emit)
         self.worker.start()
         self.error: str | None = None

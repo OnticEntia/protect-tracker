@@ -44,7 +44,7 @@ def test_boxes_for_every_frame_under_protects_id():
         await site.start()
         port = site._server.sockets[0].getsockname()[1]
         coded = encode("h265", 24)
-        got, statuses = [], []
+        got, statuses, local = [], [], []
         async with FakeCamera("h265", packetize("h265", coded, FIRST, mtu=600), pace=1 / 30) as cam, aiohttp.ClientSession() as session:
             ws = await session.ws_connect(f"ws://127.0.0.1:{port}/link")
             wall0 = time.time() * 1000
@@ -69,16 +69,22 @@ def test_boxes_for_every_frame_under_protects_id():
                 except asyncio.TimeoutError:
                     continue
                 data = json.loads(msg.data)
-                (got if data["type"] == "tracks" else statuses).append(data)
+                if data["type"] == "tracks" and data["mode"] == "local":
+                    local.append(data)
+                else:
+                    (got if data["type"] == "tracks" else statuses).append(data)
             state = service.status()
             await ws.send_json({"type": "sleep", "camera": "c1"})
             await asyncio.sleep(0.2)
             assert service.cameras == {}
             await ws.close()
         await runner.cleanup()
-        return wall0, got, statuses, state
+        return wall0, got, statuses, state, local
 
-    wall0, got, statuses, state = asyncio.run(go())
+    wall0, got, statuses, state, local = asyncio.run(go())
+    # on its own word the square was told well before Protect's report of it was bound, under an id of the service's own
+    assert local and local[0]["packet"]["tracks"][0]["id"].startswith("L") and local[-1]["packet"]["tracks"][0]["protectId"] == "T7"
+    assert len(local) > len(got) and state["cameras"]["c1"]["local"]["told"] == 1
     assert statuses and statuses[0]["device"] == "test"
     cam = state["cameras"]["c1"]
     assert cam["codec"] == "h265" and cam["bound"] == 1 and cam["frames"] >= 20

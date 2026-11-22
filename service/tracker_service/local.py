@@ -109,7 +109,7 @@ class LocalView:
                 continue
             told = self._of(t)
             if t.id in seen_ids:
-                told.best = max(told.best, t.score)
+                told.best = max(told.best, float(t.score))
                 box = t.box
             elif told.told and when - t.seen <= COAST_MS:
                 box = t.expected(when)
@@ -135,7 +135,7 @@ class LocalView:
                     if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
                         entries.append({
                             "id": f"{told.name}:face", "coord": to_coord(face.box), "objectType": "face",
-                            "confidence": round(face.score * 100), "stationary": False, "moving": face.moving(),
+                            "confidence": int(round(float(face.score) * 100)), "stationary": False, "moving": face.moving(),
                             "zones": [], "loiterZones": [], "lines": [], "desc": "", "local": True,
                             "confirmed": told.protect is not None, "of": told.name,
                         })
@@ -145,7 +145,7 @@ class LocalView:
     @staticmethod
     def _entry(track: Track, told: _Told, box) -> dict[str, Any]:
         entry: dict[str, Any] = {
-            "id": told.name, "coord": to_coord(box), "objectType": track.kind, "confidence": round(told.best * 100),
+            "id": told.name, "coord": to_coord(box), "objectType": track.kind, "confidence": int(round(float(told.best) * 100)),
             "stationary": False, "moving": track.moving(), "zones": [], "loiterZones": [], "lines": [], "desc": "",
             "local": True, "confirmed": False,
         }

@@ -4,7 +4,8 @@ integration connects to.
   it sends    {"type": "watch",  "camera": id, "source": <stream address>, "channel": n, "stamp": ms}
               {"type": "report", "camera": id, "packet": <one of Protect's live reports>}
               {"type": "sleep",  "camera": id}
-  it is sent  {"type": "tracks", "camera": id, "packet": <boxes for one frame, in the reports' shape>}
+  it is sent  {"type": "tracks", "camera": id, "mode": "auto" | "local", "packet": <boxes for one frame, in the reports' shape>}
+              ("auto": what Protect reported, refined; "local": what the service sees, on its own word)
               {"type": "status", ...}   now and then
 
 The stream address is kept in memory for as long as the camera is watched and
@@ -56,9 +57,9 @@ class Service:
             "faces": self.engine.face is not None, "cameras": {cam: c.state() for cam, c in self.cameras.items()},
         }
 
-    def _emit(self, camera: str, out: asyncio.Queue, packet: dict[str, Any]) -> None:
+    def _emit(self, camera: str, out: asyncio.Queue, packet: dict[str, Any], mode: str) -> None:
         """Called from a camera's thread."""
-        message = json.dumps({"type": "tracks", "camera": camera, "packet": packet})
+        message = json.dumps({"type": "tracks", "camera": camera, "mode": mode, "packet": packet})
         self._loop.call_soon_threadsafe(out.put_nowait, message)
 
     async def link(self, request: web.Request) -> web.WebSocketResponse:
@@ -111,7 +112,7 @@ class Service:
                 await old.stop()
             stamp = data.get("stamp")
             stamp = float(stamp) if isinstance(stamp, (int, float)) else DEFAULT_STAMP
-            self.cameras[cam] = Camera(self.engine, data["source"], stamp, lambda packet, cam=cam: self._emit(cam, out, packet))
+            self.cameras[cam] = Camera(self.engine, data["source"], stamp, lambda packet, mode, cam=cam: self._emit(cam, out, packet, mode))
             log.info("Watching a camera (%d now)", len(self.cameras))
         elif kind == "sleep":
             old = self.cameras.pop(cam, None)
