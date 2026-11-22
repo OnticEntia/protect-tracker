@@ -21,8 +21,10 @@ over a parcel; turning round. So a person not found is kept for a few
 seconds, not half of one (unless they were at the picture's border: then
 they have left), and is taken up again, as the same person, by a box of a
 person's size found near where they were: nearer the sooner, further off the
-longer they were out of sight. And of two boxes of people where one is a
-part of the other (the top half of someone behind a railing, found beside
+longer they were out of sight (reckoned in their height: a person far off
+is a few pixels wide). A box the detector is not sure of, right beside
+someone already found, starts no second track. And of two boxes of people
+where one is a part of the other (the top half of someone behind a railing, found beside
 the whole of them: much smaller, and almost wholly inside) only the bigger
 is kept.
 
@@ -42,6 +44,7 @@ GONE_MS = 500  # a track not seen for this long is dropped
 GONE_FAR_MS = 1500  # ... unless it is small and far off: found only now and then, and slow to go anywhere
 GONE_PERSON_MS = 3000  # ... or a person in the middle of the picture: hidden for a moment, not gone
 EDGE = 0.05  # a box this near the picture's border is of something coming in or going out
+SURE_BESIDE = 0.5  # a box right beside someone already found is only taken for a second person when this sure
 REACH_PER_S = 1.5  # a person out of sight may be found again this many of their own widths further off for each second
 INSIDE = 0.8  # of two people's boxes, the smaller is dropped when this much of it lies inside the bigger ...
 PART = 0.6  # ... and it is a part of a person by its size too: no more than this share of the bigger one's
@@ -122,12 +125,22 @@ def _near(track_box, box, person: bool = False, unseen_ms: float = 0.0) -> float
     dx = abs((track_box[0] + track_box[2]) - (box[0] + box[2])) / 2
     dy = abs((track_box[1] + track_box[3]) - (box[1] + box[3])) / 2
     ratio = (bw * bh) / (tw * th)
-    if person:  # bent over, half hidden: a person's box may be a third of what it was, or three times
+    if person:
+        # bent over, half hidden: a person's box may be a third of what it was, or three times. And a person is
+        # narrow (far off, a hundredth of the picture across): how far they may have gone is reckoned in their
+        # height, not their width, or one step sideways would make a stranger of them.
         reach = NEAR + REACH_PER_S * unseen_ms / 1000.0
-        ok = 0.3 < ratio < 3.3 and dx <= reach * tw and dy <= max(NEAR, 0.35 * reach) * th
-    else:
-        ok = 0.5 < ratio < 2.0 and dx <= NEAR * tw and dy <= NEAR * th
+        size = max(tw, th, bh)
+        ok = 0.3 < ratio < 3.3 and dx <= reach * size and dy <= max(NEAR, 0.35 * reach) * size
+        return (dx + dy) / size if ok else None
+    ok = 0.5 < ratio < 2.0 and dx <= NEAR * tw and dy <= NEAR * th
     return dx / tw + dy / th if ok else None
+
+
+def _beside(box, other) -> bool:
+    """Is a box right beside (or on) another, within about its height?"""
+    size = max(other[3] - other[1], box[3] - box[1])
+    return abs((box[0] + box[2]) - (other[0] + other[2])) / 2 <= 0.6 * size and abs((box[1] + box[3]) - (other[1] + other[3])) / 2 <= 0.6 * size
 
 
 def _inside(small, big) -> float:
@@ -227,8 +240,12 @@ class LocalTracker:
                     stood[j]["by"].add(tid)  # it is the thing standing there
                 self._move(self.tracks[tid], when, boxes[j])
                 seen_now.append(self.tracks[tid])
+            found_now = [self.tracks[tid].box for tid in used_t]
             for j, box in enumerate(boxes):
                 if j not in used_b:
+                    # the detector, not sure, finding the same person twice a little apart is not a second person
+                    if kind == "person" and len(box) > 4 and box[4] < SURE_BESIDE and any(_beside(box, other) for other in found_now):
+                        continue
                     track = Track(self._next, kind, tuple(box[:4]), when, float(box[4]) if len(box) > 4 else 0.0, born=when, born_box=tuple(box[:4]))
                     track.history.append((when, track.box))
                     self.tracks[self._next] = track

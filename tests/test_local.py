@@ -260,3 +260,25 @@ def test_someone_who_walks_out_of_the_picture_is_gone_at_once():
     out = play(follow, 6000, lambda ms: (0.7 + 0.0002 * ms, 0.3, 0.8 + 0.0002 * ms, 0.7) if ms < 1000 else None)
     told = [frame_ms(p) for p in out if p["tracks"]]
     assert told and max(told) < 1000 + 600 and follow.local.tracks == {}
+
+
+def test_someone_small_and_far_off_is_one_track_too():
+    """As a real delivery looked from the porch camera: the driver far off, a box a hundredth of the picture
+    wide, found as their top half or the whole of them by turns, not found at all for half a second now and
+    then, and now and then found twice, the second box unsure and a little to one side."""
+    def scene(ms: float) -> dict:
+        if ms > 12000 or 3000 <= ms < 3600 or 6000 <= ms < 6900:
+            return {"person": []}
+        x = 0.30 + 0.00003 * ms
+        tall = 0.05 if (ms // 700) % 3 == 1 else 0.10
+        boxes = [(x, 0.10, x + 0.012, 0.10 + tall, 0.7)]
+        if 8000 <= ms < 9000:
+            boxes.append((x + 0.012, 0.10, x + 0.026, 0.10 + tall, 0.36))
+        return {"person": boxes}
+
+    follow = CameraFollow(STAMP, epoch="far")
+    out = play(follow, 13500, scene)
+    told = [p for p in out if p["tracks"]]
+    assert {tr["id"] for p in told for tr in p["tracks"]} == {"Lfar-1"}
+    assert all(len(p["tracks"]) == 1 for p in told) and follow.local.stats["people"] == 1
+    assert max(frame_ms(p) for p in told) > 11900
