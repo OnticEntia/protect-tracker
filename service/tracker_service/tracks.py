@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from .detect import iou
 
 GONE_MS = 500  # a track not seen for this long is dropped
+GONE_FAR_MS = 1500  # ... unless it is small and far off: found only now and then, and slow to go anywhere
+FAR_HEIGHT = 0.06  # a box under this share of the picture's height is far off
 KEEP_MS = 3000  # how far back a track's boxes are kept (Protect's reports come about half a second late)
 MATCH_IOU = 0.2  # a box belongs to a track when they overlap at least this much
 NEAR = 0.6  # ... or, failing that, when it is this near (in units of the track's size) and of like size
@@ -179,7 +181,7 @@ class LocalTracker:
         for t in seen_now:  # what has stood in one place for a while leaves that place on the list
             if t.kind in STANDING_KINDS and when - t.born >= SETTLED_MS and not t.moving(SETTLED_MS):
                 self.stands(t.kind, t.box, when, t.id)
-        self.ended = [t for t in self.tracks.values() if when - t.seen > GONE_MS]
+        self.ended = [t for t in self.tracks.values() if when - t.seen > (GONE_FAR_MS if t.box[3] - t.box[1] < FAR_HEIGHT else GONE_MS)]
         for track in self.ended:
             del self.tracks[track.id]
         return seen_now

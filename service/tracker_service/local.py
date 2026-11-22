@@ -41,7 +41,6 @@ PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)
 TRAVEL_OWN = 0.5  # ... and at least this share of its own smaller side
-COAST_MS = 500  # a told track not found in a frame keeps moving as it did, until the tracker gives it up (tracks.GONE_MS)
 
 
 def _middle(box) -> tuple:
@@ -124,7 +123,7 @@ class LocalView:
             if t.id in seen_ids:
                 told.best = max(told.best, float(t.score))
                 box = t.box
-            elif told.told and when - t.seen <= COAST_MS:
+            elif told.told:  # not found in this frame: where it should be, until the tracker gives it up
                 box = t.expected(when)
             else:
                 continue

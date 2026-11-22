@@ -312,3 +312,15 @@ def test_a_slow_thing_far_off_is_not_broken_up_by_its_own_place():
         for t in tracker.update(ms, {"vehicle": [(x, 0.3, x + 0.05, 0.34, 0.8)]}):
             ids.add(t.id)
     assert tracker.places and len(ids) == 1
+
+
+def test_a_small_thing_far_off_found_only_now_and_then_stays_one_track():
+    tracker = LocalTracker()
+    ids = set()
+    for i in range(300):
+        ms = i * 100 / 3
+        x = 0.5 + 0.00001 * ms
+        found = [(x, 0.1, x + 0.04, 0.13, 0.4)] if (ms // 400) % 3 == 0 else []  # found for 0.4 s, not for 0.8 s
+        for t in tracker.update(ms, {"vehicle": found}):
+            ids.add(t.id)
+    assert len(ids) == 1

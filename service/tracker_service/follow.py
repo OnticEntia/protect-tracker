@@ -48,7 +48,7 @@ from .clock import FeedClock
 from .detect import iou
 from .local import LocalView
 from .rtp import Unwrap
-from .tracks import STANDING_KINDS, LocalTracker, Track
+from .tracks import FAR_HEIGHT, STANDING_KINDS, LocalTracker, Track
 
 KINDS = {"person": "person", "vehicle": "vehicle", "animal": "animal", "face": "face"}  # Protect's kind -> ours
 BIND_IOU = 0.4  # a local track is bound to a Protect track when they overlap this much in the report's frame
@@ -57,7 +57,6 @@ MISSES = 3  # reports in a row that disagree before a binding is dropped
 COAST_MS = 300  # a bound track not found in a frame keeps moving as it did for this long
 END_MS = 1500  # no report of a Protect track for this long (by frame time): it has ended
 BUSY_MS = 2000  # something moved this recently: every frame is looked at
-FAR_HEIGHT = 0.06  # a thing whose box is less than this share of the picture's height is far off
 META = ("objectType", "confidence", "zones", "loiterZones", "lines", "desc")
 BEAT_MS = 1000  # with nothing to tell, the local stream still says so this often (so quiet is told from dead)
 SLEW = 0.1  # the local stream's wall clock is brought to Protect's at this share of real time (never a jump, never backwards)
