@@ -56,6 +56,7 @@ MISSES = 3  # reports in a row that disagree before a binding is dropped
 COAST_MS = 300  # a bound track not found in a frame keeps moving as it did for this long
 END_MS = 1500  # no report of a Protect track for this long (by frame time): it has ended
 BUSY_MS = 2000  # something moved this recently: every frame is looked at
+FAR_HEIGHT = 0.06  # a thing whose box is less than this share of the picture's height is far off
 META = ("objectType", "confidence", "zones", "loiterZones", "lines", "desc")
 SEEN_MS, SEEN_MOVE = 1000, 0.05  # a local person counts as seen when followed this long and this far (share of the picture)
 
@@ -111,7 +112,7 @@ class CameraFollow:
         self.tracker = LocalTracker()
         self.theirs: dict[str, _Theirs] = {}
         self.event: dict[str, Any] = {}
-        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "left": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
+        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "left": 0, "far": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
                       "theirs_moving": 0, "theirs_followed": 0}  # Protect's tracks seen on the move, and how many of them we followed
         self.shift: float | None = None  # Protect's wall clock minus our own clock
         self.last_frame: tuple[float, dict[str, tuple]] | None = None  # the newest frame's time, and our boxes sent for it
@@ -277,7 +278,9 @@ class CameraFollow:
                 self._bound_ever.discard(t.id)
                 for mine in self.theirs.values():
                     if mine.local == t.id:  # it went out of view, or was lost in the middle of it
-                        self._unbind(mine, "left" if _at_edge(t.box) else "lost")
+                        # out at the border; or gone small into the distance; or lost in plain view
+                        small = (t.box[3] - t.box[1]) < FAR_HEIGHT
+                        self._unbind(mine, "left" if _at_edge(t.box) else "far" if small else "lost")
             elif t.kind == "person" and t.seen - t.born >= SEEN_MS and t.born_box:
                 a, b = _middle(t.born_box), _middle(t.box)
                 if abs(a[0] - b[0]) + abs(a[1] - b[1]) >= SEEN_MOVE:
