@@ -1,0 +1,5 @@
+aiohttp>=3.9
+av>=14
+numpy>=2.0
+# the GPU build, with its CUDA libraries as Python packages; it still runs on the CPU where there is no card
+onnxruntime-gpu[cuda,cudnn]>=1.20

@@ -1,0 +1,28 @@
+# The tracking service, to run next to Home Assistant. Copy this service into your own compose file
+# (or run it from here) and point the two paths at this repository.
+services:
+  protect-tracker:
+    build: ./service              # this repository's service/ folder
+    image: protect-tracker:latest
+    container_name: protect-tracker
+    restart: unless-stopped
+    # Reached by Home Assistant on this machine only. (Home Assistant on host networking uses
+    # ws://127.0.0.1:8791/link, which is the integration's default.)
+    ports:
+      - "127.0.0.1:8791:8791"
+    read_only: true               # it stores nothing
+    environment:
+      TRACKER_MODEL: m            # YOLOX size: nano, tiny, s, m, l, x
+    volumes:
+      - ./models:/models:ro       # the model files (see the README)
+    # The graphics card. Without it the service runs on the CPU (choose a small model then).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

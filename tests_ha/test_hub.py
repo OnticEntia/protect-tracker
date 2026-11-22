@@ -96,7 +96,7 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
 
         send(WALKING)
         watch = (await service.wait_for("watch"))[0]
-        assert watch == {"type": "watch", "camera": "cam1", "source": SOURCE, "channel": 1}
+        assert watch == {"type": "watch", "camera": "cam1", "source": SOURCE, "channel": 1, "stamp": -115.0}
         send(PARKED)  # once awake everything is passed on
         reports = await service.wait_for("report", 2)
         assert reports[0]["packet"]["tracks"][0]["id"] == "2" and reports[1]["packet"]["tracks"][0]["id"] == "1"
@@ -107,6 +107,27 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         assert status["service"]["connected"] and status["service"]["mode"] == "test"
         assert status["reports"] and status["cameras"] == ["cam1"] and status["watching"]["cam1"]["channel"] == 1
         assert "KEY" not in str(status)  # the stream address is not something to show
+
+        # a card listening: Protect's boxes stamped with their frame's time, and the service's mixed in
+        with patch("custom_components.protect_tracker.camera_of", return_value="cam1"):
+            await client.send_json({"id": 2, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere"})
+            assert (await client.receive_json())["success"]
+        assert (await client.receive_json())["event"] == {"status": "connected", "service": True}
+        send({**WALKING, "clockWall": 1000.0, "clockStream": 500.0, "clockStreamRate": 1000})
+        theirs = (await client.receive_json())["event"]
+        assert theirs["clockWall"] == 885.0 and theirs["clockStream"] == 385.0 and theirs["stampMs"] == 0 and theirs["source"] == "protect"
+        assert theirs["tracks"] == WALKING["tracks"]
+        ours = {"source": "local", "stampMs": 0, "clockWall": 900.0, "clockStream": 400.0, "clockStreamRate": 1000,
+                "tracks": [{"id": "2", "coord": [5, 6, 7, 8], "objectType": "person", "local": True}]}
+        await service.ws.send_json({"type": "tracks", "camera": "cam1", "packet": ours})
+        assert (await client.receive_json())["event"] == ours
+        send({"status": "disconnected"})
+        assert (await client.receive_json())["event"] == {"status": "disconnected"}
+        await client.send_json({"id": 3, "type": "protect_tracker/live/subscribe", "entity": "camera.unknown"})
+        assert (await client.receive_json())["error"]["code"] == "not_found"
+        await client.send_json({"id": 4, "type": "unsubscribe_events", "subscription": 2})
+        assert (await client.receive_json())["success"]
+        assert hub.listeners == {}
 
         hub.waker.idle = 0  # nothing moves any more
         await asyncio.sleep(0.01)
