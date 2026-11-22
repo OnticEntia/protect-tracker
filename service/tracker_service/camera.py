@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 IDLE_EVERY = 1  # while nothing moves, one frame in this many is looked at. 1: every frame, always (the first
 # sight of someone is then never later than a frame). More is only taken as far as the floor allows (pace.py)
 FAR_EVERY = 1  # one frame in this many gets the sharp look (the picture at twice the size) in place of the ordinary one
+FACES_AT_ONCE = 3  # the faces of this many people (the biggest in the picture) are looked for in a frame
 WIDE = "wide1280"  # the folder (in the models folder) of the detector's copy for that: a picture 1280 across
 WAITING = 600  # pictures and reports that may wait at most
 
@@ -77,7 +78,7 @@ class Engine:
         with self._lock:
             found = detector.detect(scaled, self.min_conf, ("person", "vehicle", "animal"))
             if faces and self.face is not None and found["person"]:
-                found["face"] = find_faces(self.face, picture(frame), found["person"], self.face_conf)
+                found["face"] = find_faces(self.face, picture(frame), found["person"], self.face_conf, most=FACES_AT_ONCE)
         return found
 
 

@@ -49,7 +49,7 @@ from typing import Any
 
 from .clock import FeedClock
 from .detect import iou
-from .faces import FaceCarry
+from .faces import FaceCarry, whose
 from .local import LocalView
 from .rtp import Unwrap
 from .tracks import FAR_HEIGHT, STANDING_KINDS, LocalTracker, Track
@@ -349,15 +349,13 @@ class CameraFollow:
         if people:
             bound = {t.local for t in self.theirs.values() if t.local is not None}
             faces = [f for f in seen_tracks if f.kind == "face" and f.id not in bound]
-            for mine, box in people:
+            theirs = whose([box for _, box in people], [f.box for f in faces])
+            for i, (mine, box) in enumerate(people):
                 face_box, score, held = None, 0.0, False
-                for face in faces:
-                    fx, fy = _middle(face.box)
-                    if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
-                        face_box, score = face.box, float(face.score)
-                        self.faces.find(mine.id, box, face.box, when, score)
-                        faces.remove(face)
-                        break
+                if i in theirs:
+                    face = faces[theirs[i]]
+                    face_box, score = face.box, float(face.score)
+                    self.faces.find(mine.id, box, face.box, when, score)
                 if face_box is None:  # not found in this frame: carried along with the person since the last find
                     carried = self.faces.carry(mine.id, box, when)
                     if carried is None:

@@ -26,6 +26,30 @@ from typing import Any
 HOLD_MS = 1000  # a face not found for this long is no longer told
 
 
+def whose(people: list, faces: list) -> dict[int, int]:
+    """Which face is whose: {index of the person: index of the face}. A face
+    is someone's when its middle lies in the upper part of their box; where
+    it could be more than one person's (two people side by side, their boxes
+    overlapping) it goes to the one whose head it sits nearest, each face to
+    one person and each person one face."""
+    pairs = []
+    for i, box in enumerate(people):
+        width, height = box[2] - box[0], box[3] - box[1]
+        if width <= 0 or height <= 0:
+            continue
+        for j, face in enumerate(faces):
+            fx, fy = (face[0] + face[2]) / 2, (face[1] + face[3]) / 2
+            if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * height:
+                pairs.append((abs(fx - (box[0] + box[2]) / 2) / width + abs(fy - (box[1] + 0.1 * height)) / height, i, j))
+    out: dict[int, int] = {}
+    taken: set[int] = set()
+    for _, i, j in sorted(pairs):
+        if i not in out and j not in taken:
+            out[i] = j
+            taken.add(j)
+    return out
+
+
 def _median(values) -> float | None:
     values = sorted(values)
     return round(values[len(values) // 2], 3) if values else None

@@ -347,3 +347,28 @@ def test_top_half_then_hidden_then_back_is_still_them():
     out = play(follow, 6000, scene)
     told = [p for p in out if p["tracks"]]
     assert {tr["id"] for p in told for tr in p["tracks"]} == {"Lhalf-1"} and all(len(p["tracks"]) == 1 for p in told)
+
+
+def test_two_people_side_by_side_each_keep_their_own_face():
+    """Two people walk down the pavement shoulder to shoulder, their boxes overlapping. Two tracks, two face
+    boxes, each face on its own person throughout."""
+    a = lambda ms: (0.20 + 0.0001 * ms, 0.30, 0.30 + 0.0001 * ms, 0.70)  # noqa: E731
+    b = lambda ms: (0.27 + 0.0001 * ms, 0.31, 0.37 + 0.0001 * ms, 0.71)  # noqa: E731 - overlapping a by a third
+    face = lambda p, ms: (p(ms)[0] + 0.03, p(ms)[1] + 0.01, p(ms)[0] + 0.07, p(ms)[1] + 0.07)  # noqa: E731
+    def scene(ms: float) -> dict:
+        k = int(ms / STEP + 0.5)
+        faces = ([face(a, ms) + (0.8,)] if k % 3 == 0 else []) + ([face(b, ms) + (0.85,)] if k % 4 == 0 else [])
+        return {"person": [a(ms) + (0.9,), b(ms) + (0.88,)], "face": faces}
+
+    follow = CameraFollow(STAMP, epoch="pair")
+    out = play(follow, 5000, scene)
+    last = {tr["id"]: tr for tr in out[-1]["tracks"]}
+    assert set(last) == {"Lpair-1", "Lpair-2", "Lpair-1:face", "Lpair-2:face"}
+    for p in out:
+        ms = frame_ms(p)
+        for tr in p["tracks"]:
+            if tr["objectType"] == "face":
+                owner = a if tr["of"] == "Lpair-1" else b
+                x = to_box(tr["coord"])[0]
+                assert abs(x - face(owner, ms)[0]) < 0.012, f"{tr['id']} was on the other person's face at {ms:.0f}"
+    assert max(len(p["tracks"]) for p in out) == 4

@@ -103,7 +103,9 @@ def replay(looks, old: bool = False) -> dict[str, Any]:
         found_near = sum(1 for boxes in between if any(_near(b, prev["last_box"], 3.0) for b in boxes))
         tall_before, tall_after = prev["last_box"][3] - prev["last_box"][1], row["first_box"][3] - row["first_box"][1]
         edge = min(prev["last_box"][0], prev["last_box"][1], 1 - prev["last_box"][2], 1 - prev["last_box"][3]) <= 0.05
-        if gap <= 0:
+        if gap > 6000:
+            why = "long after: more likely someone else"
+        elif gap <= 0:
             why = "beside: both at once"
         elif edge:
             why = "border: the first was at the picture's edge"

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .faces import FaceCarry
+from .faces import FaceCarry, whose
 from .tracks import Track
 
 # kind -> (how sure the detector must be, the least height as a share of the picture)
@@ -152,15 +152,13 @@ class LocalView:
                 people.append((told, box))
         # the faces of the people told: found in this frame, or carried along with their person since the last find
         faces = [f for f in seen if f.kind == "face"]
-        for told, box in people:
+        theirs = whose([box for _, box in people], [f.box for f in faces])
+        for i, (told, box) in enumerate(people):
             face_box, score, held = None, 0.0, False
-            for face in faces:
-                fx, fy = _middle(face.box)
-                if box[0] <= fx <= box[2] and box[1] <= fy <= box[1] + 0.45 * (box[3] - box[1]):
-                    face_box, score = face.box, float(face.score)
-                    self.faces.find(told.name, box, face.box, when, score)
-                    faces.remove(face)
-                    break
+            if i in theirs:
+                face = faces[theirs[i]]
+                face_box, score = face.box, float(face.score)
+                self.faces.find(told.name, box, face.box, when, score)
             if face_box is None:
                 carried = self.faces.carry(told.name, box, when)
                 if carried is None:
