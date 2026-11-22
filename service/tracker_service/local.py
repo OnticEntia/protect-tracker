@@ -10,9 +10,12 @@ waits for Protect, and nothing stops when Protect goes quiet.
 
 With nobody to say "that is nothing", being sure is this module's own job:
 
-  - a person the detector is sure of (SURE_AT_ONCE) is told at once: three
-    frames running, a tenth of a second, wherever they are and whether or
-    not they move. Someone walking into the picture is told at its edge;
+  - a person near the camera whom the detector is sure of (SURE_AT_ONCE) is
+    told at once: three frames running, a tenth of a second, whether or not
+    they move. Someone walking into the picture is told at its edge;
+  - a person small and far off is told once they have walked their own
+    height from where they were first found: at that size a pillar or a
+    post passes for a person, even surely for a frame or two;
   - a person it is less sure of must also be seen walking: found in most
     frames for a quarter of a second, going somewhere step by step. And one
     that has stood in one place for seconds without the detector ever being
@@ -48,6 +51,7 @@ from .tracks import Track
 # (a vehicle that small is far down the road, found one moment and not the next: not told until it is nearer)
 SURE = {"person": (0.45, 0.025), "vehicle": (0.5, 0.06), "animal": (0.5, 0.04)}
 SURE_AT_ONCE = 0.75  # a person the detector is this sure of is told at once (three frames), moving or not
+NEAR_HEIGHT = 0.08  # a person at least this share of the picture's height is near: no fixture looks like that
 FIXTURE_MS = 4000  # a "person" in one place this long, never surely found, is taken for a fixture
 PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
@@ -153,8 +157,15 @@ class LocalView:
                 return False
             if self.standing("person", track.box) is not None and not track.walking():
                 return False  # where a fixture is known to be (a post, a sign: found as a person time and again)
+            height = track.box[3] - track.box[1]
+            if height < NEAR_HEIGHT:
+                # small and far off, where a pillar or a post can pass for a person, even surely for a frame or two:
+                # told once they have walked their own height from where they were first found
+                a, b = track.born_box, track.box
+                gone = abs((a[0] + a[2]) - (b[0] + b[2])) / 2 + abs(a[1] - b[1])
+                return gone >= height and track.walking() and track.seen - track.born >= PERSIST_MS
             if told.best >= SURE_AT_ONCE:
-                return True  # plainly a person: told at once
+                return True  # near, and plainly a person: told at once
             if track.stood(FIXTURE_MS):
                 return False  # never surely a person, and has not stirred: a fixture
             return track.seen - track.born >= PERSIST_MS and track.walking()
