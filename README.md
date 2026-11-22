@@ -21,6 +21,16 @@ Nothing logs in to Protect on its own and nothing is written to it: everything c
 UniFi Protect integration you already have. The camera's stream address is passed to the service
 in memory when it is needed and is never stored or logged.
 
+## No footage is stored
+
+This project never writes video or pictures to disk: no recordings, no clips, no buffer files,
+no saved frames. A frame lives in memory for as long as it takes to look at it. Your console
+already records everything; keeping a second copy elsewhere would only be one more place for
+footage of your home to sit. Anything that needs the past reads it from the console's own
+recordings, through Home Assistant, tied to Protect's event.
+
+What is kept is derived data only: boxes, tracks, timings, ids and measurements.
+
 ## Models
 
 The model files are not part of this repository. The service reads them from a models folder.
