@@ -123,7 +123,7 @@ def _near(track_box, box, person: bool = False, unseen_ms: float = 0.0) -> float
     if tw <= 0 or th <= 0 or bw <= 0 or bh <= 0:
         return None
     dx = abs((track_box[0] + track_box[2]) - (box[0] + box[2])) / 2
-    dy = abs((track_box[1] + track_box[3]) - (box[1] + box[3])) / 2
+    dy = abs(track_box[1] - box[1]) if person else abs((track_box[1] + track_box[3]) - (box[1] + box[3])) / 2  # a person: by the head
     ratio = (bw * bh) / (tw * th)
     if person:
         # bent over, half hidden: a person's box may be a fraction of what it was, or several times. And a person is
@@ -265,16 +265,19 @@ class LocalTracker:
         dt = when - track.seen
         old = track.box
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        person = track.kind == "person"
         if dt > 0:
             vx = (cx - (old[0] + old[2]) / 2) / dt
-            vy = (cy - (old[1] + old[3]) / 2) / dt
+            # (a person is found as their top half one moment and the whole of them the next: the middle of the
+            # box jumps, the head does not. Where a person is going is told by the top of their box.)
+            vy = (box[1] - old[1]) / dt if person else (cy - (old[1] + old[3]) / 2) / dt
             k = SMOOTH_SPEED if track.hits > 1 else 1.0
             track.speed = (track.speed[0] + (vx - track.speed[0]) * k, track.speed[1] + (vy - track.speed[1]) * k)
         w = (old[2] - old[0]) + ((box[2] - box[0]) - (old[2] - old[0])) * SMOOTH_SIZE
         h = (old[3] - old[1]) + ((box[3] - box[1]) - (old[3] - old[1])) * SMOOTH_SIZE
         # an edge that sits on the picture's border stays there: the thing is partly out of view
         x1, x2 = cx - w / 2, cx + w / 2
-        y1, y2 = cy - h / 2, cy + h / 2
+        y1, y2 = (box[1], box[1] + h) if person else (cy - h / 2, cy + h / 2)  # (a person's box hangs from its top)
         if box[0] <= 0.002:
             x1 = box[0]
         if box[2] >= 0.998:

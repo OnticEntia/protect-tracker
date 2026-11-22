@@ -328,3 +328,22 @@ def test_the_face_keeps_up_with_a_walking_person():
     assert max(ms for ms, _ in faces) < 4000 + 1100  # a second after the last find it is given up
     stats = follow.local.faces.stats()
     assert stats["carried_off"] < 0.1 and stats["held_off"] > 0.3  # left where it was found it would have trailed by a good part of its width
+
+
+def test_top_half_then_hidden_then_back_is_still_them():
+    """From the delivery, at the live stream's size: the whole of someone, then only their top half for a
+    few frames, then nothing for 0.3 s, then their top half again a little further on."""
+    def scene(ms: float) -> dict:
+        x = 0.30 + 0.00002 * ms
+        if ms < 2500:
+            return {"person": [(x, 0.15, x + 0.02, 0.27, 0.88)]}
+        if ms < 2750:
+            return {"person": [(x + 0.007, 0.149, x + 0.02, 0.195, 0.65)]}
+        if ms < 3050:
+            return {"person": []}
+        return {"person": [(x + 0.02, 0.145, x + 0.035, 0.185, 0.8)]}
+
+    follow = CameraFollow(STAMP, epoch="half")
+    out = play(follow, 6000, scene)
+    told = [p for p in out if p["tracks"]]
+    assert {tr["id"] for p in told for tr in p["tracks"]} == {"Lhalf-1"} and all(len(p["tracks"]) == 1 for p in told)

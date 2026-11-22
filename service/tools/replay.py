@@ -18,8 +18,9 @@ comparison. `--both` runs both.
 
 What it cannot replay: Protect's own live reports (the console keeps no
 history of them), so this is the tracker on its own word, as in Local mode.
-The recording is the camera's main stream scaled down, not the very stream
-the live service watches, so a box may differ by a little.
+The recording is the camera's main stream, made the size of the stream the
+live service watches (1280x720) unless --full is given: not the very same
+pictures, so a box may differ by a little.
 """
 
 from __future__ import annotations
@@ -175,8 +176,10 @@ async def fetch(url: str, token: str, camera: str | None, start: datetime, end: 
             return bytes(data)
 
 
-def looks_of(recording: bytes, engine, sharp: bool = True, every: int = 1):
-    """The recording decoded in memory, each frame looked at: (ms, found)."""
+def looks_of(recording: bytes, engine, sharp: bool = True, every: int = 1, size: tuple[int, int] | None = (1280, 720)):
+    """The recording decoded in memory, each frame looked at: (ms, found).
+    `size`: the picture is first made the size of the stream the live
+    service watches, so faces are looked for in what it would have had."""
     import av  # noqa: PLC0415
 
     with av.open(io.BytesIO(recording)) as container:
@@ -184,7 +187,10 @@ def looks_of(recording: bytes, engine, sharp: bool = True, every: int = 1):
         for i, frame in enumerate(container.decode(stream)):
             if i % every or frame.pts is None:
                 continue
-            yield float(frame.pts * stream.time_base) * 1000.0, engine.look(frame, far=sharp, faces=True)
+            ms = float(frame.pts * stream.time_base) * 1000.0
+            if size and (frame.width, frame.height) != size:
+                frame = frame.reformat(width=size[0], height=size[1])
+            yield ms, engine.look(frame, far=sharp, faces=True)
 
 
 def when(text: str) -> datetime:
@@ -216,6 +222,7 @@ def main() -> None:
     ap.add_argument("--models", default=os.environ.get("TRACKER_MODELS", "models"))
     ap.add_argument("--model", default="m")
     ap.add_argument("--ordinary", action="store_true", help="the ordinary look, not the sharp one")
+    ap.add_argument("--full", action="store_true", help="look at the recording at its own size, not the live stream's 1280x720")
     ap.add_argument("--old", action="store_true", help="the tracker as it was before people were held on to")
     ap.add_argument("--both", action="store_true", help="the old rules and the present ones, one after the other")
     args = ap.parse_args()
@@ -231,7 +238,7 @@ def main() -> None:
 
     recording = asyncio.run(fetch(env["HA_URL"].rstrip("/"), env["HA_TOKEN"], args.camera, args.start, args.end))
     engine = Engine(Path(args.models), args.model)
-    looks = list(looks_of(recording, engine, sharp=not args.ordinary))  # (boxes only from here on: the pictures are gone)
+    looks = list(looks_of(recording, engine, sharp=not args.ordinary, size=None if args.full else (1280, 720)))  # (boxes only from here on: the pictures are gone)
     del recording
     print(f"{args.start.isoformat()} to {args.end.isoformat()}: {len(looks)} frames, the {'ordinary' if args.ordinary else 'sharp'} look, yolox_{args.model}")
     for old in ([True, False] if args.both else [args.old]):
