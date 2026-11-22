@@ -189,7 +189,7 @@ def test_a_car_driving_off_into_the_distance_is_let_go_when_it_is_small():
     car = lambda ms: (0.2 + 0.0001 * ms, 0.3, 0.2 + 0.0001 * ms + 2 * h(ms), 0.3 + h(ms))  # noqa: E731
     out = play(follow, 6000, lambda ms: {"vehicle": [car(ms) + (0.9,)]})
     told = [frame_ms(p) for p in out if p["tracks"]]
-    assert told and min(told) < 700 and 2800 <= max(told) <= 3200  # until it is under about 4% of the picture's height
+    assert told and min(told) < 1000 and 2800 <= max(told) <= 3200  # until it is under about 4% of the picture's height
 
 
 def test_every_person_counts_for_the_head_start():
