@@ -15,6 +15,17 @@ past a parked one hands its track to the parked one in the moment when only
 one of the two is found (one behind the other, or the detector missing a
 beat), and the parked car goes on under the passing car's name.
 
+A person is held on to harder than anything else, because a person is what
+is hidden most and changes shape most: behind a post, a railing, a car; bent
+over a parcel; turning round. So a person not found is kept for a few
+seconds, not half of one (unless they were at the picture's border: then
+they have left), and is taken up again, as the same person, by a box of a
+person's size found near where they were: nearer the sooner, further off the
+longer they were out of sight. And of two boxes of people where one is a
+part of the other (the top half of someone behind a railing, found beside
+the whole of them: much smaller, and almost wholly inside) only the bigger
+is kept.
+
 Boxes are (x1, y1, x2, y2) in 0-1 units of the picture; times are ms.
 
 Plain Python.
@@ -29,6 +40,12 @@ from .detect import iou
 
 GONE_MS = 500  # a track not seen for this long is dropped
 GONE_FAR_MS = 1500  # ... unless it is small and far off: found only now and then, and slow to go anywhere
+GONE_PERSON_MS = 3000  # ... or a person in the middle of the picture: hidden for a moment, not gone
+EDGE = 0.05  # a box this near the picture's border is of something coming in or going out
+REACH_PER_S = 1.5  # a person out of sight may be found again this many of their own widths further off for each second
+INSIDE = 0.8  # of two people's boxes, the smaller is dropped when this much of it lies inside the bigger ...
+PART = 0.6  # ... and it is a part of a person by its size too: no more than this share of the bigger one's
+# (two whole people, one passing in front of the other, are of a size: both are kept)
 FAR_HEIGHT = 0.06  # a box under this share of the picture's height is far off
 KEEP_MS = 3000  # how far back a track's boxes are kept (Protect's reports come about half a second late)
 MATCH_IOU = 0.2  # a box belongs to a track when they overlap at least this much
@@ -94,15 +111,50 @@ class Track:
         return hist[-1][1]
 
 
-def _near(track_box, box) -> bool:
+def _near(track_box, box, person: bool = False, unseen_ms: float = 0.0) -> float | None:
+    """How far a box is from where a track should be (in the track's own
+    widths), when it is near enough and of like enough size to be the same
+    thing; None when it is not."""
     tw, th = track_box[2] - track_box[0], track_box[3] - track_box[1]
     bw, bh = box[2] - box[0], box[3] - box[1]
     if tw <= 0 or th <= 0 or bw <= 0 or bh <= 0:
-        return False
+        return None
     dx = abs((track_box[0] + track_box[2]) - (box[0] + box[2])) / 2
     dy = abs((track_box[1] + track_box[3]) - (box[1] + box[3])) / 2
-    like = 0.5 < (bw * bh) / (tw * th) < 2.0
-    return like and dx <= NEAR * tw and dy <= NEAR * th
+    ratio = (bw * bh) / (tw * th)
+    if person:  # bent over, half hidden: a person's box may be a third of what it was, or three times
+        reach = NEAR + REACH_PER_S * unseen_ms / 1000.0
+        ok = 0.3 < ratio < 3.3 and dx <= reach * tw and dy <= max(NEAR, 0.35 * reach) * th
+    else:
+        ok = 0.5 < ratio < 2.0 and dx <= NEAR * tw and dy <= NEAR * th
+    return dx / tw + dy / th if ok else None
+
+
+def _inside(small, big) -> float:
+    """The share of `small` that lies inside `big`."""
+    w, h = min(small[2], big[2]) - max(small[0], big[0]), min(small[3], big[3]) - max(small[1], big[1])
+    area = (small[2] - small[0]) * (small[3] - small[1])
+    return (w * h) / area if w > 0 and h > 0 and area > 0 else 0.0
+
+
+def one_box_a_person(boxes: list) -> list:
+    """People's boxes without those lying almost wholly inside a bigger one."""
+    by_size = sorted(boxes, key=lambda b: -(b[2] - b[0]) * (b[3] - b[1]))
+    kept: list = []
+    area = lambda b: (b[2] - b[0]) * (b[3] - b[1])  # noqa: E731
+    for box in by_size:
+        if all(_inside(box, big) < INSIDE or area(box) > PART * area(big) for big in kept):
+            kept.append(box)
+    return kept
+
+
+def _gone_after(track: Track) -> float:
+    """How long a track is kept without being found."""
+    box = track.box
+    if track.kind == "person":
+        at_edge = box[0] <= EDGE or box[1] <= EDGE or box[2] >= 1 - EDGE or box[3] >= 1 - EDGE
+        return GONE_MS if at_edge else GONE_PERSON_MS
+    return GONE_FAR_MS if box[3] - box[1] < FAR_HEIGHT else GONE_MS
 
 
 class LocalTracker:
@@ -143,6 +195,8 @@ class LocalTracker:
         seen_now: list[Track] = []
         self.places = [p for p in self.places if when - p["seen"] <= PLACE_KEEP_MS]
         for kind, boxes in found.items():
+            if kind == "person":
+                boxes = one_box_a_person(boxes)
             tracks = [t for t in self.tracks.values() if t.kind == kind]
             expected = {t.id: t.expected(when) for t in tracks}
             going = {t.id: t.moving() for t in tracks}
@@ -158,8 +212,10 @@ class LocalTracker:
                     overlap = iou(expected[t.id], box)
                     if overlap >= MATCH_IOU:
                         pairs.append((overlap, t.id, j))
-                    elif _near(expected[t.id], box):
-                        pairs.append((overlap - 1.0, t.id, j))  # a last resort, after every real overlap
+                    else:
+                        far = _near(expected[t.id], box, kind == "person", when - t.seen)
+                        if far is not None:
+                            pairs.append((-1.0 - far, t.id, j))  # a last resort, after every real overlap; the nearest first
             used_t: set[int] = set()
             used_b: set[int] = set()
             for _, tid, j in sorted(pairs, reverse=True):
@@ -181,7 +237,7 @@ class LocalTracker:
         for t in seen_now:  # what has stood in one place for a while leaves that place on the list
             if t.kind in STANDING_KINDS and when - t.born >= SETTLED_MS and not t.moving(SETTLED_MS):
                 self.stands(t.kind, t.box, when, t.id)
-        self.ended = [t for t in self.tracks.values() if when - t.seen > (GONE_FAR_MS if t.box[3] - t.box[1] < FAR_HEIGHT else GONE_MS)]
+        self.ended = [t for t in self.tracks.values() if when - t.seen > _gone_after(t)]
         for track in self.ended:
             del self.tracks[track.id]
         return seen_now

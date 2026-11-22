@@ -110,7 +110,7 @@ def test_stops_when_the_local_track_is_lost_and_binds_again():
     times = [p["clockWall"] + STAMP - WALL0 for p in out]
     assert not [t for t in times if 1000 + 320 < t < 2000]  # it coasts a moment, then nothing
     assert [t for t in times if 1000 <= t <= 1000 + 320]
-    assert max(times) > 3900 and follow.stats["bound"] == 2
+    assert max(times) > 3900 and follow.stats["bound"] == 1  # hidden for a second: the same person, taken up again
 
 
 def test_leaving_the_picture_is_told_from_being_lost():
@@ -119,8 +119,9 @@ def test_leaving_the_picture_is_told_from_being_lost():
     run(follow, 2500, ours=out_of_view, protect=lambda at: [theirs(at, box=out_of_view(at))] if at < 1200 else None)
     assert follow.stats["let_go"]["left"] == 1 and follow.stats["let_go"]["lost"] == 0
     follow = primed()
-    run(follow, 2500, ours=lambda ms: where(ms) if ms < 1200 else None, protect=lambda at: [theirs(at)])
-    assert follow.stats["let_go"]["lost"] == 1 and follow.stats["let_go"]["left"] == 0
+    run(follow, 6000, ours=lambda ms: where(ms) if ms < 1200 else None, protect=lambda at: [theirs(at)])  # (a person is kept three seconds)
+    # (not found any more while Protect's box goes on: let go as no longer the same, or as lost; never as having left)
+    assert follow.stats["let_go"]["lost"] + follow.stats["let_go"]["disagreed"] == 1 and follow.stats["let_go"]["left"] == 0
 
 
 def test_stops_when_protect_stops_reporting():
@@ -181,7 +182,7 @@ def test_the_face_of_a_followed_person_goes_out_too():
 
 def test_people_protect_never_reported_are_counted():
     follow = primed()
-    run(follow, 3000, ours=lambda ms: where(ms) if ms < 2000 else None, protect=lambda at: [])
+    run(follow, 6000, ours=lambda ms: where(ms) if ms < 2000 else None, protect=lambda at: [])
     assert follow.stats["people_never_reported"] == 1 and follow.stats["bound"] == 0
 
 

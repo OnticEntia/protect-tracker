@@ -42,6 +42,8 @@ PERSIST_MS = 250  # found for this long ...
 PERSIST_HITS = 3  # ... and in this many frames
 TRAVEL = 0.02  # ... and this far from where it was first found (share of the picture, across and down together)
 TRAVEL_OWN = 0.5  # ... and at least this share of its own smaller side
+SHOWN_UNSEEN_MS = 1500  # a told track not found is still told for this long (the tracker may keep a person longer,
+# to know them again; but a box is not shown standing where nobody has been seen for seconds)
 GONE_SMALL = 0.7  # a told vehicle or animal under this share of its kind's least height is left out again
 
 
@@ -125,7 +127,7 @@ class LocalView:
             if t.id in seen_ids:
                 told.best = max(told.best, float(t.score))
                 box = t.box
-            elif told.told:  # not found in this frame: where it should be, until the tracker gives it up
+            elif told.told and when - t.seen <= SHOWN_UNSEEN_MS:  # not found in this frame: where it should be
                 box = t.expected(when)
             else:
                 continue
