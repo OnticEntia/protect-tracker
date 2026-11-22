@@ -115,12 +115,20 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         assert (await client.receive_json())["event"] == {"status": "connected", "service": True}
         send({**WALKING, "clockWall": 1000.0, "clockStream": 500.0, "clockStreamRate": 1000})
         theirs = (await client.receive_json())["event"]
-        assert theirs["clockWall"] == 1000.0 and theirs["clockStream"] == 500.0 and theirs["source"] == "protect"  # as Protect sent it
-        assert theirs["tracks"] == WALKING["tracks"]
+        assert theirs["clockWall"] == 1000.0 and theirs["clockStream"] == 500.0  # as Protect sent it
+        assert theirs["source"] == "local"  # the service is watching this camera: that is how it is served
+        assert theirs["tracks"] == [{**WALKING["tracks"][0], "local": False}]  # no box of the service's yet: Protect's
         ours = {"source": "local", "clockWall": 1100.0, "clockStream": 400.0, "clockStreamRate": 1000,
                 "tracks": [{"id": "2", "coord": [5, 6, 7, 8], "objectType": "person", "local": True}]}
         await service.ws.send_json({"type": "tracks", "camera": "cam1", "packet": ours})
         assert (await client.receive_json())["event"] == ours
+        # one box a track: while the service's is fresh, Protect's for that id is held back (others pass)
+        send({**WALKING, "tracks": WALKING["tracks"] + PARKED["tracks"]})
+        both = (await client.receive_json())["event"]
+        assert [tr["id"] for tr in both["tracks"]] == ["1"] and both["tracks"][0]["local"] is False and both["source"] == "local"
+        hub._fresh["cam1"]["2"] -= 1.0  # the service has had no box of it for a moment
+        send(WALKING)
+        assert [tr["id"] for tr in (await client.receive_json())["event"]["tracks"]] == ["2"]
         send({"status": "disconnected"})
         assert (await client.receive_json())["event"] == {"status": "disconnected"}
         await client.send_json({"id": 3, "type": "protect_tracker/live/subscribe", "entity": "camera.unknown"})

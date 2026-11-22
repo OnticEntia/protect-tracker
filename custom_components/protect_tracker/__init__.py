@@ -26,8 +26,14 @@ same shape, with the service's boxes mixed in: for a thing the service follows
 there is a box for every frame, under Protect's own track id and with
 Protect's details; for everything else, and whenever the service is away or
 has lost the thing, Protect's own boxes. The service's boxes are stamped as
-Protect stamps its own, so a card times both the same way; `source` says
-which a packet is ("local" or "protect").
+Protect stamps its own, so a card times both the same way.
+
+A track has one box at a time: while the service's box of it is fresh,
+Protect's box for that id is left out of what is passed on, and comes back
+only when the service has had none for a moment (HOLD_S). Each track says
+which it is (`local`: true or false). `source` on a packet says how the
+camera is being served just then, and stays put: "local" while the service
+is watching it, "protect" while it is not.
 """
 
 from __future__ import annotations
@@ -55,6 +61,7 @@ from .wake import Waker
 _LOGGER = logging.getLogger(__name__)
 
 CHECK = timedelta(seconds=5)
+HOLD_S = 0.7  # Protect's box of a thing is held back this long after the service's last box of it
 
 
 def _protect_api(hass: HomeAssistant):
@@ -111,6 +118,7 @@ class TrackerHub:
         self.stamp = STAMP_MS.get(self.channel, -125.0)
         self.always = bool(entry.options.get(CONF_ALWAYS, False))
         self.listeners: dict[str, set[Send]] = {}  # camera -> the cards listening to it
+        self._fresh: dict[str, dict[str, float]] = {}  # camera -> track id -> when the service last sent a box of it
         self._relay: Any = None  # Protect Detections' hub the reports come from
         self._unsubs: dict[str, Callable[[], None]] = {}
         self._stop_check: Callable[[], None] | None = None
@@ -163,7 +171,8 @@ class TrackerHub:
         if payload.get("status"):
             self._tell(camera, payload)
             return
-        self._tell(camera, {**payload, "source": "protect"})
+        if camera in self.listeners:
+            self._tell(camera, self._theirs(camera, payload))
         if self.waker.report(camera, payload, time.monotonic()):
             self.hass.async_create_task(self._watch(camera))
         if camera in self.waker.awake:
@@ -208,6 +217,7 @@ class TrackerHub:
 
     @callback
     def _linked(self) -> None:
+        self._fresh.clear()
         self.watching.clear()  # a service just (re)connected watches nothing yet: _check sees to it
 
     @callback
@@ -215,7 +225,27 @@ class TrackerHub:
         if message.get("type") == "status":
             self.service = {k: v for k, v in message.items() if k != "type"}
         elif message.get("type") == "tracks" and isinstance(message.get("packet"), dict):
-            self._tell(str(message.get("camera")), message["packet"])
+            camera, now = str(message.get("camera")), time.monotonic()
+            fresh = self._fresh.setdefault(camera, {})
+            for tr in message["packet"].get("tracks") or []:
+                if isinstance(tr, dict):
+                    fresh[str(tr.get("id"))] = now
+            self._tell(camera, message["packet"])
+
+    def _theirs(self, camera: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """One of Protect's reports as it is passed on: without the things
+        the service has a fresh box of, and saying how the camera is served."""
+        now = time.monotonic()
+        fresh = self._fresh.get(camera) or {}
+        for tid in [tid for tid, at in fresh.items() if now - at > 10]:
+            del fresh[tid]
+        tracks = [
+            {**tr, "local": False}
+            for tr in payload.get("tracks") or []
+            if isinstance(tr, dict) and now - fresh.get(str(tr.get("id")), -1e9) > HOLD_S
+        ]
+        served = self.link.connected and camera in self.watching
+        return {**payload, "tracks": tracks, "source": "local" if served else "protect"}
 
     # --------------------------------------------------------- the cards
 

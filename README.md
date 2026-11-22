@@ -68,14 +68,15 @@ Messages have the shape of Protect Detections' `protect_detections/live/subscrib
 `objectType`, `confidence`, `stationary`, `zones`, `loiterZones`, `lines`, `desc`), and `{"status": ...}`
 messages are passed on as they are. What is added:
 
-- **`source`** on every packet with boxes: `"local"` for boxes found by the service (each track also has
-  `local: true`), `"protect"` for Protect's own, passed on as Protect sent them.
+- **`local`** on every track: `true` for a box found by the service, `false` for Protect's own.
+- **One box a track.** A thing the service follows gets a packet for every frame, under Protect's track
+  id and with Protect's details; while those are fresh, Protect's own box for that id is left out of what
+  is passed on. When the service loses the thing, Protect's box comes back after a moment. Things the
+  service does not follow (parked cars, kinds it has no model for) are Protect's throughout.
+- **`source`** on a packet says how the camera is being served just then and stays put: `"local"` while
+  the service is watching it, `"protect"` while it is not (asleep, or not running).
 - The service's boxes are **stamped as Protect stamps its own** (a little after the frame they belong
   to), so a card times both the same way and needs no change for it.
-- A thing the service follows gets a packet for every frame, under Protect's track id and with Protect's
-  details. Protect's reports of it keep coming too; they are older than what the card already has, so
-  their boxes fall away by themselves. When the service loses the thing, or is not running, Protect's
-  boxes are what is left: nothing has to be switched.
 - **Faces.** Where the service finds the face of a person it is following and Protect reports no face,
   the face is a track of its own: `id` is `<the person's track id>:face`, `objectType` is `face`, and
   `of` names the person's track. It is the one thing sent that Protect did not report itself.
