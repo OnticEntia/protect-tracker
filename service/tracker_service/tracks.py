@@ -36,6 +36,8 @@ class Track:
     speed: tuple = (0.0, 0.0)  # of its middle, per ms
     hits: int = 1
     history: deque = field(default_factory=deque)  # (when, box), oldest first
+    born: float = 0.0  # when it was first found, and where
+    born_box: tuple = ()
 
     def expected(self, when: float) -> tuple:
         """Where it should be at `when` if it keeps moving as it did."""
@@ -78,6 +80,7 @@ def _near(track_box, box) -> bool:
 class LocalTracker:
     def __init__(self) -> None:
         self.tracks: dict[int, Track] = {}
+        self.ended: list[Track] = []  # the tracks dropped at the last update
         self._next = 1
 
     def update(self, when: float, found: dict[str, list]) -> list[Track]:
@@ -106,13 +109,14 @@ class LocalTracker:
                 seen_now.append(self.tracks[tid])
             for j, box in enumerate(boxes):
                 if j not in used_b:
-                    track = Track(self._next, kind, tuple(box[:4]), when, float(box[4]) if len(box) > 4 else 0.0)
+                    track = Track(self._next, kind, tuple(box[:4]), when, float(box[4]) if len(box) > 4 else 0.0, born=when, born_box=tuple(box[:4]))
                     track.history.append((when, track.box))
                     self.tracks[self._next] = track
                     self._next += 1
                     seen_now.append(track)
-        for tid in [tid for tid, t in self.tracks.items() if when - t.seen > GONE_MS]:
-            del self.tracks[tid]
+        self.ended = [t for t in self.tracks.values() if when - t.seen > GONE_MS]
+        for track in self.ended:
+            del self.tracks[track.id]
         return seen_now
 
     @staticmethod

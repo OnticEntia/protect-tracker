@@ -55,7 +55,9 @@ an input only as tall as a 16:9 frame is preferred where there is one (`<models>
    UniFi Protect integration and [Protect Detections](https://github.com/OnticEntia/protect-detections).
 
 The service is woken when a camera reports something on the move and left alone again half a minute
-after the last movement; things that only stand there (a parked car) do not wake it.
+after the last movement; things that only stand there (a parked car) do not wake it. With "Watch all
+the time" (the integration's options) every camera is watched always instead: while nothing moves the
+service looks at a few frames a second, and at every frame as soon as something does.
 
 ## For cards: `protect_tracker/live/subscribe`
 
@@ -64,17 +66,19 @@ after the last movement; things that only stand there (a parked car) do not wake
 Messages have the shape of Protect Detections' `protect_detections/live/subscribe` (`clockWall`,
 `clockStream`, `clockStreamRate`, `eventId`, `tracks[]` with `id`, `coord` [x, y, w, h] in 0–1000,
 `objectType`, `confidence`, `stationary`, `zones`, `loiterZones`, `lines`, `desc`), and `{"status": ...}`
-messages are passed on as they are. Two things differ:
+messages are passed on as they are. What is added:
 
-- **`stampMs: 0`** on every packet with boxes. Protect stamps a report a little after the frame it
-  describes (about an eighth of a second), and a card has to allow for that. Here every packet is stamped
-  with the time of the very frame its boxes belong to, Protect's own reports included (they are
-  re-stamped). A card that sees `stampMs` uses it in place of its own allowance.
-- **`source`**: `"local"` for boxes found by the service (each track also has `local: true`), `"protect"`
-  for Protect's own. A thing the service follows gets a packet for every frame, under Protect's track
-  id; Protect's reports of it keep coming too, with its details, and are older than what the card
-  already has, so their boxes fall away by themselves. When the service loses the thing, or is not
-  running, Protect's boxes are what is left: nothing has to be switched.
+- **`source`** on every packet with boxes: `"local"` for boxes found by the service (each track also has
+  `local: true`), `"protect"` for Protect's own, passed on as Protect sent them.
+- The service's boxes are **stamped as Protect stamps its own** (a little after the frame they belong
+  to), so a card times both the same way and needs no change for it.
+- A thing the service follows gets a packet for every frame, under Protect's track id and with Protect's
+  details. Protect's reports of it keep coming too; they are older than what the card already has, so
+  their boxes fall away by themselves. When the service loses the thing, or is not running, Protect's
+  boxes are what is left: nothing has to be switched.
+- **Faces.** Where the service finds the face of a person it is following and Protect reports no face,
+  the face is a track of its own: `id` is `<the person's track id>:face`, `objectType` is `face`, and
+  `of` names the person's track. It is the one thing sent that Protect did not report itself.
 
 The command answers `not_loaded`, `not_found` or `not_ready` when it cannot serve a camera; a card
 should then use Protect Detections' command as before.

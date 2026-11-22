@@ -1,6 +1,6 @@
 """Protect's tracks followed in our frames: binding, sending, letting go."""
 
-from tracker_service.follow import CameraFollow, restamp, to_box
+from tracker_service.follow import CameraFollow, to_box
 from tracker_service.tracks import LocalTracker
 
 WALL0 = 1_700_000_000_000.0
@@ -66,24 +66,24 @@ def test_bound_to_protects_track_and_sent_every_frame():
     follow = primed()
     out = run(follow, 3000, protect=lambda at: [theirs(at)])
     assert follow.stats["bound"] == 1
-    times = [p["clockWall"] - WALL0 for p in out]
+    times = [p["clockWall"] + STAMP - WALL0 for p in out]
     assert times == sorted(times) and len(set(times)) == len(times)  # in order, each frame once
     # from the frame of the first report on, every frame has a box: about 30 a second
     assert min(times) < 50 and max(times) > 2900 and len(times) >= 85
     for p in out:
         (tr,) = p["tracks"]
         assert tr["id"] == "p1" and tr["objectType"] == "person" and tr["zones"] == [3] and tr["local"] is True
-        assert p["stampMs"] == 0 and p["source"] == "local" and p["eventId"] == "ev1"
-        assert abs(p["clockStream"] - (p["clockWall"] - WALL0 + STREAM0)) < 0.2
+        assert "stampMs" not in p and p["source"] == "local" and p["eventId"] == "ev1"
+        assert abs(p["clockStream"] - (p["clockWall"] - WALL0 + STREAM0)) < 0.2  # stamped as Protect stamps: the same two clocks
         # the box is where the walker was in that very frame
-        ms = p["clockWall"] - WALL0
+        ms = p["clockWall"] + STAMP - WALL0
         assert abs(to_box(tr["coord"])[0] - where(ms)[0]) < 0.004
 
 
 def test_the_first_boxes_are_sent_when_the_binding_is_made():
     follow = primed()
     out = run(follow, 560, protect=lambda at: [theirs(at)])  # the first report (of the frame at 0) comes at 500
-    assert len(out) >= 14 and out[0]["clockWall"] - WALL0 < 50  # the half second already seen, at once
+    assert len(out) >= 14 and out[0]["clockWall"] + STAMP - WALL0 < 50  # the half second already seen, at once
 
 
 def test_protects_parked_things_are_left_to_protect():
@@ -99,7 +99,7 @@ def test_let_go_when_they_disagree():
     protect = lambda at: [theirs(at)] if at < 1500 else [theirs(at, box=(0.7, 0.1, 0.8, 0.2))]  # noqa: E731
     out = run(follow, 4000, protect=protect)
     assert follow.stats["bound"] == 1 and follow.stats["dropped"] == 1
-    last = max(p["clockWall"] - WALL0 for p in out)
+    last = max(p["clockWall"] + STAMP - WALL0 for p in out)
     assert 2000 < last < 3000  # three reports that disagree (each half a second late), then nothing more
 
 
@@ -107,7 +107,7 @@ def test_stops_when_the_local_track_is_lost_and_binds_again():
     follow = primed()
     ours = lambda ms: where(ms) if ms < 1000 or ms > 2000 else None  # noqa: E731 - hidden for a second
     out = run(follow, 4000, ours=ours, protect=lambda at: [theirs(at)])
-    times = [p["clockWall"] - WALL0 for p in out]
+    times = [p["clockWall"] + STAMP - WALL0 for p in out]
     assert not [t for t in times if 1000 + 320 < t < 2000]  # it coasts a moment, then nothing
     assert [t for t in times if 1000 <= t <= 1000 + 320]
     assert max(times) > 3900 and follow.stats["bound"] == 2
@@ -116,7 +116,7 @@ def test_stops_when_the_local_track_is_lost_and_binds_again():
 def test_stops_when_protect_stops_reporting():
     follow = primed()
     out = run(follow, 5000, protect=lambda at: [theirs(at)] if at <= 1500 else None)
-    last = max(p["clockWall"] - WALL0 for p in out)
+    last = max(p["clockWall"] + STAMP - WALL0 for p in out)
     assert 1500 < last <= 1500 + 1500 + 40
 
 
@@ -127,7 +127,7 @@ def test_two_walkers_keep_their_own_ids():
     out = run(follow, 2500, ours=lambda ms: {"person": [a(ms) + (0.9,), b(ms) + (0.8,)]},
               protect=lambda at: [theirs(at, "A", box=a(at)), theirs(at, "B", box=b(at))])
     for p in out:
-        ms = p["clockWall"] - WALL0
+        ms = p["clockWall"] + STAMP - WALL0
         for tr in p["tracks"]:
             want = a(ms) if tr["id"] == "A" else b(ms)
             assert abs(to_box(tr["coord"])[0] - want[0]) < 0.005
@@ -143,15 +143,50 @@ def test_faces_and_other_kinds():
     assert ids == {"p1": "person", "f1": "face"}  # a plate is Protect's alone
 
 
-def test_frames_before_the_clocks_are_known_are_skipped():
+def test_followed_before_protect_says_anything():
+    """With nothing reported yet nothing goes out, but the walker is followed, and the first report binds it:
+    we had it this much earlier."""
     follow = CameraFollow(STAMP)
-    assert follow.frame(rtp_of(0), {"person": [where(0) + (0.9,)]}, WALL0) == []
-    assert follow.stats["untimed"] == 1
+    assert run(follow, 2000) == [] and len(follow.tracker.tracks) == 1
+    out = run(follow, 4000, start=2000, protect=lambda at: [theirs(at)] if at >= 1500 else None)
+    assert out and follow.stats["bound"] == 1
+    head = follow.head_start()["person"]
+    assert head["n"] == 1 and 1400 <= head["frames_ms"] <= 1600  # seen from 0; Protect's first report is of the frame at 1500
+    assert 1900 <= head["told_ms"] <= 2100  # ... and reached us half a second after that
+    for p in out:
+        ms = p["clockWall"] + STAMP - WALL0
+        assert abs(to_box(p["tracks"][0]["coord"])[0] - where(ms)[0]) < 0.004
 
 
-def test_restamp():
-    got = restamp({"clockWall": 1000.0, "clockStream": 90_000, "clockStreamRate": 90_000, "tracks": [1]}, -125)
-    assert got["clockWall"] == 875 and got["clockStream"] == 90_000 - 11_250 and got["stampMs"] == 0 and got["source"] == "protect" and got["tracks"] == [1]
+def test_the_face_of_a_followed_person_goes_out_too():
+    follow = primed()
+    face = lambda ms: (0.13 + 0.0002 * ms, 0.31, 0.17 + 0.0002 * ms, 0.37)  # noqa: E731
+    out = run(follow, 2000, ours=lambda ms: {"person": [where(ms) + (0.9,)], "face": [face(ms) + (0.8,)]}, protect=lambda at: [theirs(at)])
+    faces = [tr for p in out for tr in p["tracks"] if tr["objectType"] == "face"]
+    assert len(faces) > 30 and all(tr["id"] == "p1:face" and tr["of"] == "p1" and tr["local"] for tr in faces)
+    # a face on its own, with nobody followed, is not sent
+    lone = primed()
+    assert run(lone, 2000, ours=lambda ms: {"face": [face(ms) + (0.8,)]}, protect=lambda at: []) == []
+
+
+def test_people_protect_never_reported_are_counted():
+    follow = primed()
+    run(follow, 3000, ours=lambda ms: where(ms) if ms < 2000 else None, protect=lambda at: [])
+    assert follow.stats["people_never_reported"] == 1 and follow.stats["bound"] == 0
+
+
+def test_busy_while_something_moves():
+    follow = primed()
+    run(follow, 1000, ours=lambda ms: (0.5, 0.5, 0.6, 0.9))  # someone appears, and stands still
+    assert follow.busy()  # new: worth a close look for a moment
+    run(follow, 4000, start=1000, ours=lambda ms: (0.5, 0.5, 0.6, 0.9))
+    assert not follow.busy()
+    run(follow, 5000, start=4000, ours=lambda ms: (0.5 + 0.0002 * (ms - 4000), 0.5, 0.6 + 0.0002 * (ms - 4000), 0.9))  # walks off
+    assert follow.busy()
+    run(follow, 8500, start=5000, ours=lambda ms: None, protect=lambda at: [theirs(at, "v", "vehicle", stationary=True, box=(0.1, 0.1, 0.2, 0.2))])
+    assert not follow.busy()  # Protect's parked car is no reason
+    follow.report(report(8600, [theirs(8600, "x")]), WALL0 + 9000)
+    assert follow.busy()  # Protect says something moves
 
 
 def test_tracker_follows_through_a_crossing():

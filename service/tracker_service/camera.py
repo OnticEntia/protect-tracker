@@ -28,6 +28,7 @@ from .video import Decoder, picture
 log = logging.getLogger(__name__)
 
 BEHIND = 4  # pictures waiting beyond which a frame is decoded but not looked at (to catch up)
+IDLE_EVERY = 6  # while nothing moves, one frame in this many is looked at (five a second of thirty)
 WAITING = 600  # pictures and reports that may wait at most
 
 
@@ -68,7 +69,9 @@ class CameraWorker(threading.Thread):
         self.decoder: Decoder | None = None
         self.codec: str | None = None
         self.skipped = 0
+        self.idle_skipped = 0
         self.lost = 0
+        self._count = 0
         self.look_ms: deque = deque(maxlen=300)
         self.frame_times: deque = deque(maxlen=300)
 
@@ -115,6 +118,10 @@ class CameraWorker(threading.Thread):
             if self.items.qsize() > BEHIND:
                 self.skipped += 1
                 continue
+            self._count += 1
+            if self._count % IDLE_EVERY and not self.follow.busy():
+                self.idle_skipped += 1  # nothing moves: a look now and then is enough to notice when something does
+                continue
             started = time.perf_counter()
             found = self.engine.look(frame)
             self.look_ms.append((time.perf_counter() - started) * 1000)
@@ -133,7 +140,8 @@ class CameraWorker(threading.Thread):
         looks = sorted(self.look_ms)
         return {
             "codec": self.codec, "fps": round(fps, 1), "look_ms": round(looks[len(looks) // 2], 1) if looks else None,
-            "skipped": self.skipped, "lost": self.lost, **self.follow.stats, "check": self.check.result(),
+            "skipped": self.skipped, "idle_skipped": self.idle_skipped, "lost": self.lost, **self.follow.stats,
+            "check": self.check.result(), "head_start": self.follow.head_start(),
         }
 
 

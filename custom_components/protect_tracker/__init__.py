@@ -25,9 +25,9 @@ UniFi Protect cameras only.
 same shape, with the service's boxes mixed in: for a thing the service follows
 there is a box for every frame, under Protect's own track id and with
 Protect's details; for everything else, and whenever the service is away or
-has lost the thing, Protect's own boxes. Every packet is stamped with the
-time of the frame its boxes belong to and says so (`stampMs: 0`), where
-Protect's own are stamped a little after it.
+has lost the thing, Protect's own boxes. The service's boxes are stamped as
+Protect stamps its own, so a card times both the same way; `source` says
+which a packet is ("local" or "protect").
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import CONF_STREAM, CONF_URL, DEFAULT_STREAM, DEFAULT_URL, DETECTIONS, DOMAIN, STAMP_MS, STREAMS
+from .const import CONF_ALWAYS, CONF_STREAM, CONF_URL, DEFAULT_STREAM, DEFAULT_URL, DETECTIONS, DOMAIN, STAMP_MS, STREAMS
 from .link import ServiceLink
 from .wake import Waker
 
@@ -97,20 +97,6 @@ def camera_of(hass: HomeAssistant, api: Any, entity_id: str) -> str | None:
     return None
 
 
-def restamp(packet: dict[str, Any], stamp_ms: float) -> dict[str, Any]:
-    """One of Protect's reports, stamped with the time of the frame it
-    describes, as the service's packets are (so the two can be mixed)."""
-    out = dict(packet)
-    rate = float(packet.get("clockStreamRate") or 1000)
-    if isinstance(packet.get("clockWall"), (int, float)):
-        out["clockWall"] = packet["clockWall"] + stamp_ms
-    if isinstance(packet.get("clockStream"), (int, float)):
-        out["clockStream"] = packet["clockStream"] + stamp_ms * rate / 1000.0
-    out["stampMs"] = 0
-    out["source"] = "protect"
-    return out
-
-
 Send = Callable[[dict[str, Any]], None]
 
 
@@ -123,6 +109,7 @@ class TrackerHub:
         self.service: dict[str, Any] = {}  # what the service last said of itself
         self.watching: dict[str, dict[str, Any]] = {}  # camera -> {entity, channel, since}
         self.stamp = STAMP_MS.get(self.channel, -125.0)
+        self.always = bool(entry.options.get(CONF_ALWAYS, False))
         self.listeners: dict[str, set[Send]] = {}  # camera -> the cards listening to it
         self._relay: Any = None  # Protect Detections' hub the reports come from
         self._unsubs: dict[str, Callable[[], None]] = {}
@@ -176,7 +163,7 @@ class TrackerHub:
         if payload.get("status"):
             self._tell(camera, payload)
             return
-        self._tell(camera, restamp(payload, self.stamp))
+        self._tell(camera, {**payload, "source": "protect"})
         if self.waker.report(camera, payload, time.monotonic()):
             self.hass.async_create_task(self._watch(camera))
         if camera in self.waker.awake:
@@ -205,7 +192,10 @@ class TrackerHub:
     @callback
     def _check(self, _now=None) -> None:
         self._attach()
-        for camera in self.waker.sweep(time.monotonic()):
+        if self.always:  # every camera stays awake
+            for camera in self._unsubs:
+                self.waker.awake[camera] = time.monotonic()
+        for camera in [] if self.always else self.waker.sweep(time.monotonic()):
             self.watching.pop(camera, None)
             self.link.send({"type": "sleep", "camera": camera})
         # awake but not watched (the service was away when it woke)
@@ -257,6 +247,7 @@ class TrackerHub:
             "cameras": sorted(self._unsubs),
             "watching": {cam: dict(info) for cam, info in self.watching.items()},
             "listeners": {cam: len(sends) for cam, sends in self.listeners.items()},
+            "always": self.always,
         }
 
 

@@ -89,7 +89,7 @@ def test_boxes_for_every_frame_under_protects_id():
         packet = message["packet"]
         (tr,) = packet["tracks"]
         assert tr["id"] == "T7" and tr["objectType"] == "person" and tr["zones"] == [2] and tr["local"] and packet["eventId"] == "e9"
-        i = (packet["clockWall"] - wall0) * 30 / 1000  # which frame this box says it is of
+        i = (packet["clockWall"] - 125 - wall0) * 30 / 1000  # which frame this box says it is of (stamped as Protect stamps)
         assert abs(i - round(i)) < 0.01
         frames[round(i)] = tr["coord"]
     assert len(frames) >= 17 and len(frames) == len(got)  # a box for every frame after the one it was bound at, each once

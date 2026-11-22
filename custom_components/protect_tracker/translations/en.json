@@ -6,7 +6,8 @@
         "description": "Follows what UniFi Protect reports, frame by frame, with a model running on this machine. The tracking service must be running; this is where Home Assistant reaches it.",
         "data": {
           "url": "Tracking service address",
-          "stream": "Camera stream to follow"
+          "stream": "Camera stream to follow",
+          "always": "Watch all the time (not only while Protect reports movement)"
         }
       }
     },
@@ -21,7 +22,8 @@
         "title": "Protect Tracker",
         "data": {
           "url": "Tracking service address",
-          "stream": "Camera stream to follow"
+          "stream": "Camera stream to follow",
+          "always": "Watch all the time (not only while Protect reports movement)"
         }
       }
     }

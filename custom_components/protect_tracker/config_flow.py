@@ -10,15 +10,16 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.core import callback
 from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 
-from .const import CONF_STREAM, CONF_URL, DEFAULT_STREAM, DEFAULT_URL, DOMAIN, STREAMS
+from .const import CONF_ALWAYS, CONF_STREAM, CONF_URL, DEFAULT_STREAM, DEFAULT_URL, DOMAIN, STREAMS
 
 
-def _schema(url: str, stream: str) -> vol.Schema:
+def _schema(url: str, stream: str, always: bool = False) -> vol.Schema:
     return vol.Schema({
         vol.Required(CONF_URL, default=url): str,
         vol.Required(CONF_STREAM, default=stream): SelectSelector(
             SelectSelectorConfig(options=list(STREAMS), translation_key="stream")
         ),
+        vol.Required(CONF_ALWAYS, default=always): bool,
     })
 
 
@@ -44,5 +45,6 @@ class ProtectTrackerOptions(OptionsFlow):
             return self.async_create_entry(data=user_input)
         now = self.config_entry.options
         return self.async_show_form(
-            step_id="init", data_schema=_schema(now.get(CONF_URL, DEFAULT_URL), now.get(CONF_STREAM, DEFAULT_STREAM))
+            step_id="init",
+            data_schema=_schema(now.get(CONF_URL, DEFAULT_URL), now.get(CONF_STREAM, DEFAULT_STREAM), bool(now.get(CONF_ALWAYS, False))),
         )

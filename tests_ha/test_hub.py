@@ -115,9 +115,9 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         assert (await client.receive_json())["event"] == {"status": "connected", "service": True}
         send({**WALKING, "clockWall": 1000.0, "clockStream": 500.0, "clockStreamRate": 1000})
         theirs = (await client.receive_json())["event"]
-        assert theirs["clockWall"] == 885.0 and theirs["clockStream"] == 385.0 and theirs["stampMs"] == 0 and theirs["source"] == "protect"
+        assert theirs["clockWall"] == 1000.0 and theirs["clockStream"] == 500.0 and theirs["source"] == "protect"  # as Protect sent it
         assert theirs["tracks"] == WALKING["tracks"]
-        ours = {"source": "local", "stampMs": 0, "clockWall": 900.0, "clockStream": 400.0, "clockStreamRate": 1000,
+        ours = {"source": "local", "clockWall": 1100.0, "clockStream": 400.0, "clockStreamRate": 1000,
                 "tracks": [{"id": "2", "coord": [5, 6, 7, 8], "objectType": "person", "local": True}]}
         await service.ws.send_json({"type": "tracks", "camera": "cam1", "packet": ours})
         assert (await client.receive_json())["event"] == ours
@@ -167,5 +167,34 @@ async def test_config_flow(hass):
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     assert result["type"] == "form"
     with patch("custom_components.protect_tracker.async_setup_entry", return_value=True):
-        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"url": "ws://127.0.0.1:8791/link", "stream": "high"})
-    assert result["type"] == "create_entry" and result["options"]["stream"] == "high"
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"url": "ws://127.0.0.1:8791/link", "stream": "high", "always": True})
+    assert result["type"] == "create_entry" and result["options"]["stream"] == "high" and result["options"]["always"] is True
+
+
+async def test_always_on_keeps_every_camera_watched(hass, socket_enabled, unused_tcp_port):
+    service, relay = Service(), Relay()
+    await service.start(unused_tcp_port)
+    hass.config.components.update({"camera", "unifiprotect"})
+    hass.data["protect_detections"] = relay
+    entry = MockConfigEntry(domain=DOMAIN, options={"url": f"ws://127.0.0.1:{unused_tcp_port}/link", "stream": "medium", "always": True})
+    entry.add_to_hass(hass)
+    with patch("custom_components.protect_tracker.async_get_stream_source", return_value=SOURCE), patch(
+        "custom_components.protect_tracker.stream_entity", return_value=("camera.somewhere", 1)
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await asyncio.wait_for(service.connected.wait(), 5)
+        hub = hass.data[DOMAIN]
+        for _ in range(100):
+            if hub.link.connected:
+                break
+            await asyncio.sleep(0.02)
+        hub._check()  # nothing has been reported, and still it is watched
+        assert (await service.wait_for("watch"))[0]["camera"] == "cam1"
+        relay.listeners["cam1"](PARKED)  # and everything Protect says is passed on
+        await service.wait_for("report")
+        hub.waker.idle = 0
+        hub._check()
+        await asyncio.sleep(0.1)
+        assert not [m for m in service.got if m["type"] == "sleep"]
+        await hass.config_entries.async_unload(entry.entry_id)
+    await service.runner.cleanup()
