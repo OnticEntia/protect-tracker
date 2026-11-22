@@ -61,8 +61,9 @@ an 8 GB NVIDIA card.
 
 The service is woken when a camera reports something on the move and left alone again half a minute
 after the last movement; things that only stand there (a parked car) do not wake it. With "Watch all
-the time" (the integration's options) every camera is watched always instead: while nothing moves the
-service looks at a few frames a second, and at every frame as soon as something does.
+the time" (the integration's options) every camera is watched always instead, every frame of it. On a
+machine with less to spare, `TRACKER_IDLE_EVERY=6` makes the service look at one frame in six while
+nothing moves (and at every frame as soon as something does).
 
 ## For cards: `protect_tracker/live/subscribe`
 
@@ -148,7 +149,8 @@ Protect's own detections remain the certain ones.
 
 Five times a second the service also takes a sharper look for people: the picture at twice the
 detector's size, cut into four tiles, each looked at on its own, so someone far away is four times
-the pixels. It costs about as much as five ordinary looks each time. `TRACKER_FAR=0` turns it off.
+the pixels. It costs about as much as five ordinary looks each time. `TRACKER_FAR_EVERY` sets how often
+(one frame in so many; 6 by default), `TRACKER_FAR=0` turns it off.
 
 ## Development
 
