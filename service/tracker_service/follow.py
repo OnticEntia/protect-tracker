@@ -95,6 +95,8 @@ class _Theirs:
         self.misses = 0
         self.sent = 0.0  # the newest frame time a local box of it went out for
         self.counted = False  # its head start has been noted
+        self.was_moving = False
+        self.was_followed = False
 
 
 class CameraFollow:
@@ -104,7 +106,8 @@ class CameraFollow:
         self.tracker = LocalTracker()
         self.theirs: dict[str, _Theirs] = {}
         self.event: dict[str, Any] = {}
-        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0}
+        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
+                      "theirs_moving": 0, "theirs_followed": 0}  # Protect's tracks seen on the move, and how many of them we followed
         self.shift: float | None = None  # Protect's wall clock minus our own clock
         self.last_frame: tuple[float, dict[str, tuple]] | None = None  # the newest frame's time, and our boxes sent for it
         self.last_report: tuple[float, dict[str, tuple]] | None = None  # the newest report's frame time, and its boxes
@@ -162,6 +165,9 @@ class CameraFollow:
             boxes[tid] = to_box(tr["coord"])
             if not mine.first_box:
                 mine.first_box = boxes[tid]
+            if not mine.stationary and mine.kind is not None and not mine.was_moving:
+                mine.was_moving = True
+                self.stats["theirs_moving"] += 1
         for tid in [tid for tid, t in self.theirs.items() if frame_time - t.reported > END_MS]:
             del self.theirs[tid]
         self.last_report = (frame_time, boxes)
@@ -206,6 +212,9 @@ class CameraFollow:
             taken.add(lid)
             self._bound_ever.add(lid)
             self.stats["bound"] += 1
+            if not mine.was_followed:
+                mine.was_followed = True
+                self.stats["theirs_followed"] += 1
             local = self.tracker.tracks[lid]
             self._head_start(mine, local)
             # what was found of it since that frame goes out now, in order
@@ -248,10 +257,11 @@ class CameraFollow:
         for t in seen_tracks:
             if t.id not in self._born_at:
                 self._born_at[t.id] = now_ms
-                if t.kind in ("person", "vehicle"):
-                    self._busy = max(self._busy, when)  # something new: worth a close look
-            if t.kind in ("person", "vehicle") and t.hits >= 3 and (abs(t.speed[0]) + abs(t.speed[1])) * 1000 > 0.01:
-                self._busy = max(self._busy, when)  # it moves (a hundredth of the picture a second, or more)
+                if t.kind == "person":
+                    self._busy = max(self._busy, when)  # someone new: worth a close look at once
+            # (a parked car's box trembles, and is lost and found again: only going somewhere counts)
+            if t.kind in ("person", "vehicle", "animal") and t.moving():
+                self._busy = max(self._busy, when)
         for t in self.tracker.ended:
             self._born_at.pop(t.id, None)
             if t.id in self._bound_ever:

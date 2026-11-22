@@ -177,6 +177,10 @@ def test_people_protect_never_reported_are_counted():
 
 def test_busy_while_something_moves():
     follow = primed()
+    car = lambda ms: {"vehicle": [(0.2 + 0.001 * ((ms // 33) % 2), 0.2, 0.4, 0.4, 0.5)] if (ms // 400) % 2 else []}  # noqa: E731
+    run(follow, 3000, ours=car)  # a parked car, its box trembling, lost and found again
+    assert not follow.busy()
+    follow = primed()
     run(follow, 1000, ours=lambda ms: (0.5, 0.5, 0.6, 0.9))  # someone appears, and stands still
     assert follow.busy()  # new: worth a close look for a moment
     run(follow, 4000, start=1000, ours=lambda ms: (0.5, 0.5, 0.6, 0.9))
