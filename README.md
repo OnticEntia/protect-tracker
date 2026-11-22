@@ -7,8 +7,9 @@ untouched. Protect's live boxes arrive about four times a second; this project f
 things in the camera's video on every frame, so the boxes drawn over a live picture sit on what
 they mark. UniFi Protect cameras only.
 
-**Status: early.** The video path, the detectors and the link to Home Assistant exist and are
-tested; local boxes are not yet sent to any card.
+**Status: early.** One camera at a time has been followed live; the boxes reach Home Assistant through
+`protect_tracker/live/subscribe`. No card of this project's own yet: Protect Detections' tracking card
+and camera wall are the ones meant to draw them.
 
 ## The parts
 
@@ -42,6 +43,41 @@ The model files are not part of this repository. The service reads them from a m
 
 Run through ONNX Runtime (MIT). On a graphics card a half-precision copy of the YOLOX model with
 an input only as tall as a 16:9 frame is preferred where there is one (`<models>/fast/`).
+
+## Installing
+
+1. **The service.** It runs next to Home Assistant, as a container: see `service/compose.example.yaml`.
+   Put the model files in a `models` folder and mount it at `/models`. It listens on this machine only
+   (`127.0.0.1:8791`), has no login of its own, and can do nothing but look at the streams Home Assistant
+   hands it. With an NVIDIA card (and the NVIDIA container toolkit) it uses the card; without, the CPU.
+2. **The integration.** Install this repository through HACS as a custom repository (type: integration),
+   restart Home Assistant, and add "Protect Tracker" under Settings → Devices & services. It needs the
+   UniFi Protect integration and [Protect Detections](https://github.com/OnticEntia/protect-detections).
+
+The service is woken when a camera reports something on the move and left alone again half a minute
+after the last movement; things that only stand there (a parked car) do not wake it.
+
+## For cards: `protect_tracker/live/subscribe`
+
+    {"type": "protect_tracker/live/subscribe", "entity": "<a UniFi Protect camera entity>"}
+
+Messages have the shape of Protect Detections' `protect_detections/live/subscribe` (`clockWall`,
+`clockStream`, `clockStreamRate`, `eventId`, `tracks[]` with `id`, `coord` [x, y, w, h] in 0–1000,
+`objectType`, `confidence`, `stationary`, `zones`, `loiterZones`, `lines`, `desc`), and `{"status": ...}`
+messages are passed on as they are. Two things differ:
+
+- **`stampMs: 0`** on every packet with boxes. Protect stamps a report a little after the frame it
+  describes (about an eighth of a second), and a card has to allow for that. Here every packet is stamped
+  with the time of the very frame its boxes belong to, Protect's own reports included (they are
+  re-stamped). A card that sees `stampMs` uses it in place of its own allowance.
+- **`source`**: `"local"` for boxes found by the service (each track also has `local: true`), `"protect"`
+  for Protect's own. A thing the service follows gets a packet for every frame, under Protect's track
+  id; Protect's reports of it keep coming too, with its details, and are older than what the card
+  already has, so their boxes fall away by themselves. When the service loses the thing, or is not
+  running, Protect's boxes are what is left: nothing has to be switched.
+
+The command answers `not_loaded`, `not_found` or `not_ready` when it cannot serve a camera; a card
+should then use Protect Detections' command as before.
 
 ## Development
 
