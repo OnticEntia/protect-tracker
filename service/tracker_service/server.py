@@ -40,8 +40,28 @@ class Service:
     def app(self) -> web.Application:
         app = web.Application()
         app.router.add_get("/link", self.link)
+        app.router.add_get("/bench", self.bench)
+        app.router.add_post("/bench", self.bench)
         app.on_shutdown.append(self._shutdown)
         return app
+
+    async def bench(self, request: web.Request) -> web.Response:
+        """The model comparison (bench.py). POST starts one on the frames of
+        whatever is being watched (?frames=240&every=15); GET says how far it
+        is, and the numbers when it is done."""
+        bench = getattr(self.engine, "bench", None)
+        if bench is None:
+            return web.json_response({"error": "not available"}, status=404)
+        if request.method == "POST":
+            if not self.cameras:
+                return web.json_response({"error": "no camera is being watched"}, status=409)
+            try:
+                frames, every = int(request.query.get("frames", 240)), int(request.query.get("every", 15))
+            except ValueError:
+                return web.json_response({"error": "frames and every are numbers"}, status=400)
+            if not bench.start(frames, every):
+                return web.json_response({"error": "one is running already"}, status=409)
+        return web.json_response(bench.status())
 
     async def _shutdown(self, _app) -> None:
         await self._stop_all()

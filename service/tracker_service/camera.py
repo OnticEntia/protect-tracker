@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Any
 
+from .bench import Bench
 from .check import H as CHECK_H, W as CHECK_W, PictureCheck
 from .detect import Detector, FaceDetector, find_faces
 from .follow import CameraFollow
@@ -60,6 +61,7 @@ class Engine:
         wide = Path(models) / WIDE / f"yolox_{model}.onnx"
         self.wide = Detector(wide) if far and wide.exists() else None
         self.far = self.wide is not None
+        self.bench = Bench(Path(models))
         self._lock = threading.Lock()
 
     @property
@@ -136,6 +138,9 @@ class CameraWorker(threading.Thread):
         if self.decoder is None:
             return
         for rtp, frame in self.decoder.decode(unit):
+            bench = getattr(self.engine, "bench", None)
+            if bench is not None:
+                bench.offer(frame, self.follow.reported_moving() if bench.state == "collecting" else None)  # (bench.py)
             now = time.monotonic()
             plan = self.pace.plan(max(0.0, time.time() - at / 1000.0), self.follow.busy(), now)
             self._pace_state = self.pace.state(now)

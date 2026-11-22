@@ -364,6 +364,14 @@ class CameraFollow:
         self.stats["sent"] += 1
         return [self._packet(when, entries)]
 
+    def reported_moving(self, within_ms: float = 400.0) -> list[tuple[str, tuple]]:
+        """What Protect reports as on the move just now: [(kind, box)], from
+        its newest report if that is fresh."""
+        if self.last_report is None or self._newest() - self.last_report[0] > within_ms + 600:
+            return []
+        boxes = self.last_report[1]
+        return [(t.kind, boxes[tid]) for tid, t in self.theirs.items() if tid in boxes and t.kind and not t.stationary]
+
     def busy(self) -> bool:
         """Is something on the move (so every frame is worth a look)?"""
         if self._base is None:
