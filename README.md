@@ -10,6 +10,10 @@ other, finds their face, and adds Protect's details (its type, description, zone
 when Protect reports the same thing. Protect's detections, recordings and events are untouched; nothing
 is written to Protect. UniFi Protect cameras only.
 
+![A camera's live view in Home Assistant with a box following a passing car, drawn from this project's positions](docs/live-boxes.webp)
+
+The boxes are drawn by Protect Detections' cards; camera and zone names are painted out.
+
 <!-- SCREENSHOT: docs/tracking-local.png — Protect Detections' tracking card with source Local: a person
      walking up a path with the box on them and the face box on their face, the source mark showing "local".
      No house number, name or other identifying detail in the picture. -->
