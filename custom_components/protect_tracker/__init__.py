@@ -279,7 +279,7 @@ class TrackerHub:
             for tr in message["packet"].get("tracks") or []:
                 if isinstance(tr, dict):
                     fresh[str(tr.get("id"))] = now
-            self._tell(camera, message["packet"])
+            self._tell(camera, {**message["packet"], "mode": "auto"})
 
     def _theirs(self, camera: str, payload: dict[str, Any]) -> dict[str, Any]:
         """One of Protect's reports as it is passed on: without the things

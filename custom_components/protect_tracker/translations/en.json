@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "Protect Tracker",
-        "description": "Follows what UniFi Protect reports, frame by frame, with a model running on this machine. The tracking service must be running; this is where Home Assistant reaches it.",
+        "description": "Follows people, vehicles and animals on UniFi Protect cameras frame by frame, with a detector running in a service on this machine (see the README: the service is installed separately). This is where Home Assistant reaches it.",
         "data": {
           "url": "Tracking service address",
           "stream": "Camera stream to follow",
-          "always": "Watch all the time (not only while Protect reports movement)"
+          "always": "Watch all the time (needed to see someone before Protect reports them)"
         }
       }
     },
@@ -23,7 +23,7 @@
         "data": {
           "url": "Tracking service address",
           "stream": "Camera stream to follow",
-          "always": "Watch all the time (not only while Protect reports movement)"
+          "always": "Watch all the time (needed to see someone before Protect reports them)"
         }
       }
     }

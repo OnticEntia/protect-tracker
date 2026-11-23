@@ -13,8 +13,9 @@ services:
     read_only: true               # it stores nothing
     environment:
       TRACKER_MODEL: m            # YOLOX size: nano, tiny, s, m, l, x
+      # TRACKER_MIN_FPS: 20       # the frame-rate floor; the other settings are in the README
     volumes:
-      - ./models:/models:ro       # the model files (see the README)
+      - ./models:/models:ro       # the model files and their fast/ and wide1280/ copies (see the README)
     # The graphics card. Without it the service runs on the CPU (choose a small model then).
     deploy:
       resources:

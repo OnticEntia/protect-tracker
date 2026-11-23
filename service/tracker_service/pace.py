@@ -5,7 +5,7 @@ its frames looked at every second (20 unless set higher; it cannot be set
 lower), idle or busy, however many cameras share the card. Everything else
 gives way to that, in this order, as the detector falls behind. Behind is
 told by how long a frame has waited since it came, not by how many are
-waiting: a camera's frames arrive a few at a time, and a far look takes
+waiting: a camera's frames arrive a few at a time, and a sharp look takes
 longer than a frame lasts, so two or three waiting for a moment is how it
 goes when all is well.
 

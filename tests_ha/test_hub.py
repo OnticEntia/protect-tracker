@@ -121,7 +121,7 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         ours = {"source": "local", "clockWall": 1100.0, "clockStream": 400.0, "clockStreamRate": 1000,
                 "tracks": [{"id": "2", "coord": [5, 6, 7, 8], "objectType": "person", "local": True}]}
         await service.ws.send_json({"type": "tracks", "camera": "cam1", "packet": ours})
-        assert (await client.receive_json())["event"] == ours
+        assert (await client.receive_json())["event"] == {**ours, "mode": "auto"}
         # one box a track: while the service's is fresh, Protect's for that id is held back (others pass)
         send({**WALKING, "tracks": WALKING["tracks"] + PARKED["tracks"]})
         both = (await client.receive_json())["event"]
