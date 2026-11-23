@@ -15,7 +15,7 @@ from .server import Service
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Follows what UniFi Protect reports, frame by frame.")
+    ap = argparse.ArgumentParser(description="Follows people, vehicles and animals on UniFi Protect cameras, frame by frame.")
     ap.add_argument("--host", default=os.environ.get("TRACKER_HOST", "127.0.0.1"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("TRACKER_PORT", "8791")))
     ap.add_argument("--models", default=os.environ.get("TRACKER_MODELS", "models"), help="the folder the model files are in")
