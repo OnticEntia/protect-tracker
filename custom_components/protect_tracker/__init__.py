@@ -43,6 +43,15 @@ only when the service has had none for a moment (HOLD_S). Each track says
 which it is (`local`: true or false). `source` on a packet says how the
 camera is being served just then, and stays put: "local" while the service
 is watching it, "protect" while it is not.
+
+Cameras come and go (roster.py). One that goes offline is left alone until it
+is back: the service is told to stop, its sensor is unavailable, and whoever
+listens is sent {"status": "offline", "reason": "offline" | "no_stream" |
+"stream_down"} and, when it is back, {"status": "online"}. One that is taken
+out of Protect is forgotten: the service is told to stop for good, listeners
+are sent {"status": "removed", "error": {...}} and their subscriptions are
+ended, and its sensor is removed. One that is adopted is taken up without a
+restart.
 """
 
 from __future__ import annotations
@@ -65,6 +74,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import CONF_ALWAYS, CONF_STREAM, CONF_URL, DEFAULT_STREAM, DEFAULT_URL, DETECTIONS, DOMAIN, STAMP_MS, STREAMS
 from .link import ServiceLink
+from .roster import NO_STREAM, OFFLINE, READY, Roster
 from .wake import Waker
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,19 +93,24 @@ def _protect_api(hass: HomeAssistant):
     return None
 
 
-def stream_entity(hass: HomeAssistant, api: Any, camera_id: str, channel: int) -> tuple[str, int] | None:
+def camera_entities(hass: HomeAssistant) -> dict[str, str]:
+    """The UniFi Protect integration's camera entities that are enabled: unique id -> entity id."""
+    return {
+        e.unique_id: e.entity_id
+        for e in er.async_get(hass).entities.values()
+        if e.platform == "unifiprotect" and e.domain == "camera" and not e.disabled_by
+    }
+
+
+def stream_entity(hass: HomeAssistant, api: Any, camera_id: str, channel: int, by_uid: dict[str, str] | None = None) -> tuple[str, int] | None:
     """The camera entity of one of a Protect camera's streams: the wanted
     channel if its entity is enabled, else whichever is. (entity id, channel)"""
     cam = api.bootstrap.cameras.get(camera_id) if api is not None else None
     if cam is None:
         return None
     mac = (cam.mac or "").replace(":", "").upper()
-    reg = er.async_get(hass)
-    by_uid = {
-        e.unique_id: e.entity_id
-        for e in reg.entities.values()
-        if e.platform == "unifiprotect" and e.domain == "camera" and not e.disabled_by
-    }
+    if by_uid is None:
+        by_uid = camera_entities(hass)
     for ch in (channel, 1, 0, 2):
         entity = by_uid.get(f"{mac}_{ch}")
         if entity:
@@ -103,15 +118,36 @@ def stream_entity(hass: HomeAssistant, api: Any, camera_id: str, channel: int) -
     return None
 
 
-def smart_cameras(api: Any) -> list[str]:
-    """The cameras (Protect ids) that recognise things."""
-    out = []
-    for cam in api.bootstrap.cameras.values() if api is not None else []:
+def _connected(cam: Any) -> bool:
+    """Does Protect say this camera is connected just now?"""
+    state = getattr(cam, "state", None)
+    if state is not None:
+        return str(getattr(state, "value", state)).upper() == "CONNECTED"
+    return bool(getattr(cam, "is_connected", True))
+
+
+def cameras_now(hass: HomeAssistant, api: Any, channel: int) -> dict[str, str] | None:
+    """The cameras this Protect has that recognise things, and how each
+    stands (roster.py). None when Protect cannot be asked (the UniFi Protect
+    integration isn't loaded just now)."""
+    if api is None:
+        return None
+    by_uid = camera_entities(hass)
+    out: dict[str, str] = {}
+    for cam in api.bootstrap.cameras.values():
         try:
-            if cam.feature_flags.smart_detect_types:
-                out.append(cam.id)
+            smart = bool(cam.feature_flags.smart_detect_types)
         except AttributeError:
-            pass
+            smart = False
+        # (a camera this console can see but has not adopted is not one of its cameras)
+        if not smart or not getattr(cam, "mac", None) or not getattr(cam, "is_adopted_by_us", True):
+            continue
+        if not _connected(cam):
+            out[cam.id] = OFFLINE
+        elif stream_entity(hass, api, cam.id, channel, by_uid) is None:
+            out[cam.id] = NO_STREAM
+        else:
+            out[cam.id] = READY
     return out
 
 
@@ -143,6 +179,14 @@ class TrackerHub:
         self.listeners: dict[tuple[str, str], set[Send]] = {}  # (camera, mode) -> the cards listening to it
         self.seen: dict[str, dict[str, Any]] = {}  # camera -> the people the service sees there now: {at, count, confirmed}
         self.seen_listeners: dict[str, set[Callable[[], None]]] = {}
+        self.roster = Roster()  # which cameras there are, and how each stands
+        self.macs: dict[str, str] = {}  # camera -> its hardware address (what its device is known by)
+        self.stream_down: set[str] = set()  # watched, but the service has had no video of it for a while
+        self.add_sensor: Callable[[str], None] | None = None  # (binary_sensor.py) makes a camera's sensor
+        self.gone_listeners: dict[str, set[Callable[[], None]]] = {}  # camera -> told when it is removed for good
+        self._ends: dict[Send, Callable[[], None]] = {}  # a listener -> what ends its subscription
+        self._waking: set[str] = set()  # cameras whose stream address is being fetched just now
+        self._relay_failed: Any = None  # the relay that could not be listened to (said once)
         self._was_linked = False
         self._fresh: dict[str, dict[str, float]] = {}  # camera -> track id -> when the service last sent a box of it
         self._relay: Any = None  # Protect Detections' hub the reports come from
@@ -151,7 +195,7 @@ class TrackerHub:
 
     async def start(self) -> None:
         self.link.start()
-        self._attach()
+        self._cameras()
         self._stop_check = async_track_time_interval(self.hass, self._check, CHECK)
 
     async def stop(self) -> None:
@@ -162,24 +206,101 @@ class TrackerHub:
 
     # ------------------------------------------------- Protect's reports
 
-    def _attach(self) -> None:
-        """Listen to the live reports of every camera that recognises things.
-        (Protect Detections may load after this, or be reloaded: checked again
-        every few seconds.)"""
+    def _cameras(self) -> None:
+        """Keep up with which cameras there are (roster.py) and act on what
+        has changed; listen to the live reports of those that can send any.
+        (Protect Detections may load after this, or be reloaded; a camera may
+        be adopted, go offline, come back, or be removed: checked every few
+        seconds.)"""
         relay = self.hass.data.get(DETECTIONS)
-        if relay is self._relay and (relay is None or self._unsubs):
-            return
-        self._detach()
-        self._relay = relay
-        if relay is None:
-            return
+        if relay is not self._relay:
+            self._detach()
+            self._relay = relay
+        api = _protect_api(self.hass)
+        for camera, was, now in self.roster.update(cameras_now(self.hass, api, self.channel)):
+            if now is None:
+                self._removed(camera)
+            elif was is None:
+                cam = api.bootstrap.cameras.get(camera) if api is not None else None
+                self.macs[camera] = getattr(cam, "mac", None) or ""
+                _LOGGER.info("A camera has been taken up (%d now)", len(self.roster.cameras))
+                if self.add_sensor is not None:
+                    self.add_sensor(camera)
+            elif now == READY:
+                _LOGGER.info("A camera is back")
+                self._say(camera, "online")
+            else:
+                _LOGGER.info("A camera is %s: it is left alone until it is back", "offline" if now == OFFLINE else "without a stream to watch")
+                self._let_go(camera)
+                self._say(camera, "offline", now)
+            self._seen_changed(camera)
+        # an offline camera has nothing to report; listening would only be knocking at its door
+        wanted = {cam for cam, state in self.roster.cameras.items() if state != OFFLINE} if relay is not None and relay is not self._relay_failed else set()
+        for camera in set(self._unsubs) - wanted:
+            self._unlisten(camera)
         try:
-            cameras = list(relay.smart_cameras())
-            for cam in cameras:
-                self._unsubs[cam] = relay.live.subscribe(cam, partial(self._report, cam))
-        except Exception:  # noqa: BLE001 - a Protect Detections without this: said once, tried again later
+            for camera in wanted - set(self._unsubs):
+                self._unsubs[camera] = relay.live.subscribe(camera, partial(self._report, camera))
+        except Exception:  # noqa: BLE001 - a Protect Detections without this: said once, tried again when it is reloaded
             _LOGGER.warning("Couldn't listen to Protect's live reports through Protect Detections", exc_info=True)
             self._detach()
+            self._relay, self._relay_failed = relay, relay
+
+    def _unlisten(self, camera: str) -> None:
+        unsub = self._unsubs.pop(camera, None)
+        if unsub is not None:
+            try:
+                unsub()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _let_go(self, camera: str) -> None:
+        """Stop watching a camera, and drop what was held of it."""
+        self.waker.forget(camera)
+        self._fresh.pop(camera, None)
+        self.stream_down.discard(camera)
+        self.seen.pop(camera, None)
+        self.watching.pop(camera, None)
+        self.link.send({"type": "sleep", "camera": camera})  # (whether or not it was watched: the service may know better)
+
+    def _removed(self, camera: str) -> None:
+        """A camera is no longer in Protect: everything of it is dropped, and
+        whoever listens is told so and let go."""
+        _LOGGER.info("A camera is no longer in Protect: it is forgotten (%d left)", len(self.roster.cameras))
+        self._let_go(camera)
+        self._unlisten(camera)
+        for mode in ("auto", "local"):
+            for send in list(self.listeners.pop((camera, mode), ())):
+                try:
+                    send({"status": "removed", "mode": mode, "service": self.link.connected,
+                          "error": {"code": "camera_removed", "message": "This camera is no longer in UniFi Protect"}})
+                except Exception:  # noqa: BLE001
+                    pass
+                end = self._ends.pop(send, None)
+                if end is not None:
+                    end()
+        for gone in list(self.gone_listeners.pop(camera, ())):
+            gone()
+        self.seen_listeners.pop(camera, None)
+        self.macs.pop(camera, None)
+
+    def _say(self, camera: str, status: str, reason: str | None = None) -> None:
+        """Tell whoever listens to a camera how it stands."""
+        for mode in ("auto", "local"):
+            payload = {"status": status, "mode": mode, "service": self.link.connected}
+            if reason:
+                payload["reason"] = reason
+            self._tell(camera, payload, mode)
+
+    def state(self, camera: str) -> str | None:
+        """How a camera stands: watching | asleep | offline | no_stream |
+        stream_down; None for one that is not (or no longer) there."""
+        state = self.roster.cameras.get(camera)
+        if state != READY:
+            return state
+        if camera in self.stream_down:
+            return "stream_down"
+        return "watching" if self.link.connected and camera in self.watching else "asleep"
 
     def _detach(self) -> None:
         for unsub in self._unsubs.values():
@@ -188,7 +309,7 @@ class TrackerHub:
             except Exception:  # noqa: BLE001
                 pass
         self._unsubs.clear()
-        self._relay = None
+        self._relay = self._relay_failed = None
 
     @callback
     def _report(self, camera: str, payload: dict[str, Any]) -> None:
@@ -199,6 +320,8 @@ class TrackerHub:
             return
         if (camera, "auto") in self.listeners:
             self._tell(camera, self._theirs(camera, payload))
+        if self.roster.cameras.get(camera) != READY:
+            return  # no stream of it to be had: Protect's own boxes are all there is
         if self.waker.report(camera, payload, time.monotonic()):
             self.hass.async_create_task(self._watch(camera))
         if camera in self.waker.awake:
@@ -206,35 +329,41 @@ class TrackerHub:
 
     async def _watch(self, camera: str) -> None:
         """Tell the service to watch a camera."""
-        if not self.link.connected:
+        if not self.link.connected or camera in self._waking or self.roster.cameras.get(camera) != READY:
             return
-        found = stream_entity(self.hass, _protect_api(self.hass), camera, self.channel)
-        if found is None:
-            return
-        entity, channel = found
+        self._waking.add(camera)
         try:
-            source = await async_get_stream_source(self.hass, entity)
-        except Exception:  # noqa: BLE001
-            source = None
-        if not source:
-            _LOGGER.debug("No stream address for a camera that reported something")
-            return
-        if camera not in self.waker.awake:
-            return  # gone quiet meanwhile
-        if self.link.send({"type": "watch", "camera": camera, "source": source, "channel": channel, "stamp": STAMP_MS.get(channel, self.stamp)}):
-            self.watching[camera] = {"entity": entity, "channel": channel, "since": time.time()}
+            found = stream_entity(self.hass, _protect_api(self.hass), camera, self.channel)
+            if found is None:
+                return
+            entity, channel = found
+            try:
+                source = await async_get_stream_source(self.hass, entity)
+            except Exception:  # noqa: BLE001
+                source = None
+            if not source:
+                _LOGGER.debug("No stream address for a camera that was to be watched")
+                return
+            if camera not in self.waker.awake or self.roster.cameras.get(camera) != READY:
+                return  # gone quiet, or gone, meanwhile
+            if self.link.send({"type": "watch", "camera": camera, "source": source, "channel": channel, "stamp": STAMP_MS.get(channel, self.stamp)}):
+                self.watching[camera] = {"entity": entity, "channel": channel, "since": time.time()}
+        finally:
+            self._waking.discard(camera)
 
     @callback
     def _check(self, _now=None) -> None:
-        self._attach()
+        self._cameras()
         if self.link.connected != self._was_linked:
             self._was_linked = self.link.connected
+            for camera in list(self.seen_listeners):  # the sensors are unavailable without the service, and back with it
+                self._seen_changed(camera)
             if not self.link.connected:  # the service has gone: said to those who rely on it alone
                 for camera, mode in list(self.listeners):
                     if mode == "local":
                         self._tell(camera, {"status": "disconnected", "mode": "local", "service": False}, "local")
-        if self.always:  # every camera stays awake, whether or not Protect's reports are coming
-            for camera in set(self._unsubs) | set(smart_cameras(_protect_api(self.hass))):
+        if self.always:  # every camera that can be watched stays awake, whether or not Protect's reports are coming
+            for camera in self.roster.ready():
                 self.waker.awake[camera] = time.monotonic()
         for camera in [cam for cam, info in self.seen.items() if time.monotonic() - info["at"] > SEEN_HOLD_S]:
             del self.seen[camera]  # nobody there any more
@@ -244,8 +373,8 @@ class TrackerHub:
             self.link.send({"type": "sleep", "camera": camera})
         # awake but not watched (the service was away when it woke)
         if self.link.connected:
-            for camera in self.waker.awake:
-                if camera not in self.watching:
+            for camera in list(self.waker.awake):
+                if camera not in self.watching and camera not in self._waking:
                     self.hass.async_create_task(self._watch(camera))
 
     # ------------------------------------------------------ the service
@@ -254,6 +383,7 @@ class TrackerHub:
     def _linked(self) -> None:
         self._fresh.clear()
         self.watching.clear()
+        self.stream_down.clear()
         for camera, mode in list(self.listeners):
             if mode == "local":  # the service is back
                 self._tell(camera, {"status": "connected", "mode": "local", "service": True}, "local")  # a service just (re)connected watches nothing yet: _check sees to it
@@ -262,8 +392,26 @@ class TrackerHub:
     def _from_service(self, message: dict[str, Any]) -> None:
         if message.get("type") == "status":
             self.service = {k: v for k, v in message.items() if k != "type"}
+            held = message.get("cameras") if isinstance(message.get("cameras"), dict) else {}
+            # a stream the service has not been able to read for a while: said, and said again when it is back
+            down = {cam for cam, info in held.items() if isinstance(info, dict) and info.get("stream") == "down" and cam in self.watching}
+            was, self.stream_down = self.stream_down, down
+            for camera in down - was:
+                _LOGGER.info("A camera's stream is down: the service keeps trying, less and less often")
+                self._say(camera, "offline", "stream_down")
+            for camera in was - down:
+                if self.roster.cameras.get(camera) == READY:
+                    _LOGGER.info("A camera's stream is back")
+                    self._say(camera, "online")
+            for camera in down ^ was:
+                self._seen_changed(camera)
+            for camera in held:  # held by the service, but not by us (it went while we were not looking): let go
+                if camera not in self.watching and camera not in self._waking:
+                    self.link.send({"type": "sleep", "camera": camera})
         elif message.get("type") == "tracks" and isinstance(message.get("packet"), dict):
             camera, now = str(message.get("camera")), time.monotonic()
+            if camera not in self.watching:
+                return  # of a camera let go meanwhile: nothing of it is passed on or kept
             if message.get("mode") == "local":  # on the service's own word
                 self._tell(camera, message["packet"], "local")
                 if message["packet"].get("tracks"):
@@ -320,12 +468,17 @@ class TrackerHub:
                 _LOGGER.debug("A live listener failed", exc_info=True)
 
     @callback
-    def subscribe(self, camera: str, send: Send, mode: str = "auto") -> Callable[[], None]:
+    def subscribe(self, camera: str, send: Send, mode: str = "auto", on_end: Callable[[], None] | None = None) -> Callable[[], None]:
+        """Have `send` called with a camera's packets. `on_end` is called if
+        the subscription is ended from this side (the camera was removed)."""
         key = (camera, mode)
         self.listeners.setdefault(key, set()).add(send)
+        if on_end is not None:
+            self._ends[send] = on_end
 
         @callback
         def unsubscribe() -> None:
+            self._ends.pop(send, None)
             listeners = self.listeners.get(key)
             if listeners is not None:
                 listeners.discard(send)
@@ -338,7 +491,8 @@ class TrackerHub:
         return {
             "service": {"connected": self.link.connected, "error": self.link.error, **self.service},
             "reports": self._relay is not None and bool(self._unsubs),
-            "cameras": sorted(self._unsubs),
+            "cameras": sorted(self.roster.cameras),
+            "states": {cam: self.state(cam) for cam in sorted(self.roster.cameras)},
             "watching": {cam: dict(info) for cam, info in self.watching.items()},
             "listeners": {f"{cam} {mode}": len(sends) for (cam, mode), sends in self.listeners.items()},
             "seen": {cam: {k: v for k, v in info.items() if k != "at"} for cam, info in self.seen.items()},
@@ -375,8 +529,11 @@ def ws_live_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConne
         connection.send_error(msg["id"], "not_found", "Not a UniFi Protect camera")
         return
     mode = msg["mode"]
-    if mode == "auto" and camera not in hub._unsubs:  # noqa: SLF001
-        connection.send_error(msg["id"], "not_ready", "Protect's live reports for this camera aren't being received")
+    if camera not in hub.roster.cameras:
+        connection.send_error(msg["id"], "not_ready", "This camera isn't one that is followed (it doesn't recognise things, or has just been removed)")
+        return
+    if mode == "auto" and hub._relay is None:  # noqa: SLF001
+        connection.send_error(msg["id"], "not_ready", "Protect's live reports aren't being received (Protect Detections isn't loaded)")
         return
     if mode == "local" and not hub.link.connected:
         connection.send_error(msg["id"], "not_ready", "The tracking service isn't running")
@@ -387,8 +544,11 @@ def ws_live_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConne
         connection.send_message(websocket_api.event_message(msg["id"], payload))
 
     connection.send_result(msg["id"])
-    connection.subscriptions[msg["id"]] = hub.subscribe(camera, send, mode)
+    connection.subscriptions[msg["id"]] = hub.subscribe(camera, send, mode, lambda: connection.subscriptions.pop(msg["id"], None))
     send({"status": "connected", "mode": mode, "service": hub.link.connected})
+    state = hub.state(camera)
+    if state in (OFFLINE, NO_STREAM, "stream_down"):  # so that silence is not taken for an empty street
+        send({"status": "offline", "mode": mode, "service": hub.link.connected, "reason": state})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

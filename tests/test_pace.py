@@ -124,3 +124,26 @@ def test_the_burst_when_a_stream_opens_is_caught_up_with_and_not_counted():
     for i in range(300):  # and from then on every frame, on time
         assert pace.plan(0.005, True, 51.0 + i / 30)["look"]
     assert pace.shed == {"far": 0, "faces": 0, "frames": 0, "idle": 0} and pace.state(61.0)["fps"] >= 29
+
+
+def test_a_stream_opened_anew_is_a_start_like_the_first():
+    pace = Pace()
+    for i in range(300):  # ten seconds, every frame on time
+        pace.plan(0.005, True, 50.0 + i / 30)
+    # ... then nothing for a minute (the camera was away), and what it had in hand all at once
+    pace.reopened(120.0)
+    for i in range(45):
+        pace.plan(1.5 - i / 30 + i * 0.008, True, 120.0 + i * 0.008)
+    assert pace.shed == {"far": 0, "faces": 0, "frames": 0, "idle": 0}  # catching up, not falling behind
+    assert pace.state(120.5)["below"] is False
+    for i in range(300):
+        assert pace.plan(0.005, True, 121.0 + i / 30)["look"]
+    assert pace.state(131.0)["fps"] >= 29 and pace.state(131.0)["below"] is False
+
+
+def test_no_frames_at_all_is_not_called_below():
+    pace = Pace()
+    for i in range(300):
+        pace.plan(0.005, True, 50.0 + i / 30)
+    state = pace.state(90.0)  # the stream has been down for half a minute
+    assert state["fps"] == 0 and state["stream_fps"] == 0 and state["below"] is False

@@ -339,3 +339,25 @@ def test_small_and_far_off_is_left_to_protect_until_it_is_nearer():
     last = max(p["clockWall"] + STAMP - WALL0 for p in out)
     # (Protect's report of the frame in which it has gone small comes half a second after that frame)
     assert follow.stats["let_go"]["far"] == 1 and follow.stats["bound"] == 1 and 3400 <= last <= 4300
+
+
+def test_protects_tracks_are_dropped_when_its_reports_stop_altogether():
+    follow = primed()
+    run(follow, 3000, protect=lambda at: [theirs(at)] if at <= 1500 else None)
+    assert "p1" in follow.theirs  # just stopped: still held (a report may be late)
+    run(follow, 9000, start=3000, protect=None)  # Protect's feed has gone quiet for good; the frames go on
+    assert follow.theirs == {}  # nothing of Protect's is held on to, bound or not
+    out = run(follow, 12000, start=9000, protect=lambda at: [theirs(at, tid="p2")])  # it reports again, a new track
+    assert out and {tr["id"] for p in out for tr in p["tracks"]} == {"p2"}
+
+
+def test_a_clock_that_starts_over_is_told_from_one_that_goes_on():
+    follow = primed()
+    run(follow, 2000)
+    # the stream dropped for a minute and is back on the same clock
+    assert follow.continues(rtp_of(62_000), WALL0 + 62_000)
+    # ... or with a few seconds in hand, sent at once
+    assert follow.continues(rtp_of(60_000), WALL0 + 62_000)
+    # the camera was restarted: its clock is somewhere else altogether
+    assert not follow.continues(int(5_000 * 90), WALL0 + 62_000)
+    assert CameraFollow(STAMP).continues(123, WALL0)  # nothing held yet: nothing to break

@@ -28,7 +28,7 @@ this project has no card of its own.
 - [Two ways of working: Local and Auto](#two-ways-of-working-local-and-auto)
 - [What is told, and when](#what-is-told-and-when) · [One person, one track](#one-person-one-track) · [Faces](#faces)
 - [Frame rate](#frame-rate) · [What it costs](#what-it-costs) · [Models](#models)
-- [Entities](#entities) · [For cards: the live command](#for-cards-protect_trackerlivesubscribe)
+- [Entities](#entities) · [Cameras that come and go](#cameras-that-come-and-go) · [For cards: the live command](#for-cards-protect_trackerlivesubscribe)
 - [No footage is stored](#no-footage-is-stored) · [Looking into it](#looking-into-it) · [Development](#development)
 
 ## The parts
@@ -265,6 +265,38 @@ Protect's own detections remain the certain ones.
 Where Protect Detections keeps its record of sightings, what the service sees is handed to it as well
 (boxes, kinds and times only), so "last seen" includes people Protect never reported.
 
+## Cameras that come and go
+
+Which cameras there are is checked against Protect every two seconds, so none of this needs a restart
+of Home Assistant or of the service.
+
+| What happens | What is done |
+|---|---|
+| **A camera goes offline** (Protect still has it, but says it is not connected) | The service is told to stop watching it; nothing is tried while it is away. Its sensor is unavailable. Listeners are sent `{"status": "offline", "reason": "offline"}`. When Protect says it is connected again it is watched again by itself, and listeners are sent `{"status": "online"}`. |
+| **Its stream cannot be read** although Protect says the camera is connected | The service tries again after 1 s, then 2, 4 … up to once a minute, for as long as it is to be watched. After 10 s without video it says so once (`stream: "down"` in the status, one line in its log) and once more when it is back; the tries in between are not logged. Listeners are sent `{"status": "offline", "reason": "stream_down"}` and then `online`; the sensor is unavailable meanwhile. |
+| **None of its camera entities is enabled** in Home Assistant | There is no stream to be had: it is not watched (`no_stream`), its sensor is unavailable, and Auto still passes Protect's own boxes on. Enabling an entity again takes it up again. |
+| **A camera is removed from Protect** | Once it has been missing for ten seconds: the service is told to stop for good (the stream is closed, and its thread, tracks and rates are dropped), everything held of it in Home Assistant is dropped, listeners are sent `{"status": "removed", "error": {"code": "camera_removed", ...}}` and their subscriptions are ended, and its sensor is removed. Nothing is ever tried for it again. |
+| **A camera is adopted** | It is taken up within seconds: its sensor is made, and it is watched (at once with "Watch all the time", else from Protect's first report of something moving). |
+| **The UniFi Protect integration is reloading** or cannot be asked | Nothing is concluded from that at first. If it lasts a minute, every camera counts as offline until it is back; none is ever removed on that account. |
+| **A camera is restarted** (its clock starts over) | The service notices on the first frame after the stream is back, and starts following afresh under new track ids. |
+
+When a camera is removed, the UniFi Protect integration removes the camera's device, and the "Person
+seen" sensor goes with it (if the device is left for some reason, the sensor removes itself). A camera
+adopted again later gets a new sensor.
+
+The service holds a camera only from "watch" to "sleep", and drops every camera when Home Assistant's
+connection closes, so nothing in it outlives the Home Assistant that asked for it; a service that still
+holds a camera Home Assistant no longer watches is told to let it go the next time it reports.
+
+The frame-rate floor is kept per camera: each watched camera has its own count, made when it is watched
+and dropped with it, so a camera leaving or joining changes nothing in another's figures except what
+sharing the card really costs. The frames a stream sends at once when it is opened again are caught up
+with and not counted as falling behind, and a camera sending nothing is not called "below the floor".
+
+Not handled here: a PTZ camera turned to another view is still the same camera, connected and
+streaming, so none of the above applies to it; what the tracker should make of a changed view (things
+remembered as parked, fixtures) is separate work and is not built yet.
+
 ## For cards: `protect_tracker/live/subscribe`
 
     {"type": "protect_tracker/live/subscribe", "entity": "<a UniFi Protect camera entity>", "mode": "local" | "auto"}
@@ -278,7 +310,14 @@ Where Protect Detections keeps its record of sightings, what the service sees is
 Boxes are **stamped as Protect stamps its own** (a little after the frame they belong to), so a card
 times them exactly as it times Protect's and needs no change for it.
 
-Errors: `not_loaded`, `not_found` (not a UniFi Protect camera), `not_ready` (Local: the service is not
+Later status messages, in both modes: `{"status": "offline", "reason": "offline" | "stream_down" |
+"no_stream"}` and `{"status": "online"}` as the camera goes and comes back (one who subscribes while it
+is away is sent `offline` right after `connected`), and `{"status": "removed", "error": {"code":
+"camera_removed", "message": ...}}` when the camera is taken out of Protect, after which the
+subscription is ended from this side. See [Cameras that come and go](#cameras-that-come-and-go).
+
+Errors: `not_loaded`, `not_found` (not a UniFi Protect camera), `not_ready` (the camera is not one
+that is followed: it does not recognise things, or has just been removed; Local: the service is not
 connected; Auto: Protect's reports are not coming). An integration too old to know `mode` refuses it as
 `invalid_format`; without this integration the command is unknown.
 
@@ -329,7 +368,9 @@ person being followed, where the service finds one and Protect reports none, is 
 
 ### `protect_tracker/status`
 
-Is the service reached, what is watched, and per camera: the frame rate against the floor and what was
+Is the service reached, which cameras there are (`cameras`) and how each stands (`states`: `watching`,
+`asleep`, `offline`, `stream_down` or `no_stream`), what is watched, and per watched camera: how its
+stream is (`stream`: `open`, `opening` or `down`, with `error`, `down_s` and `retry_s`), the frame rate against the floor and what was
 left out, look times, how many of Protect's moving tracks are followed and why bindings were let go, a
 picture check (how much movement the service's boxes hold against Protect's), how far ahead of
 Protect's first report the service had each thing, and how many face boxes were found or carried.

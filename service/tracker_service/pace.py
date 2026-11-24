@@ -54,6 +54,13 @@ class Pace:
         self.shed = {"far": 0, "faces": 0, "frames": 0, "idle": 0}
         self.started: float | None = None
 
+    def reopened(self, now: float) -> None:
+        """The stream has been opened anew (after a drop): what it sends at
+        once is a start-up like the first, and is not counted either."""
+        self.started = now
+        self._came.clear()
+        self._looked.clear()
+
     def _trim(self, now: float) -> None:
         for times in (self._came, self._looked):
             while times and times[0] < now - WINDOW:

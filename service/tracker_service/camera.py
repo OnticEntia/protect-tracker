@@ -35,6 +35,9 @@ FAR_EVERY = 1  # one frame in this many gets the sharp look (the picture at twic
 FACES_AT_ONCE = 3  # the faces of this many people (the biggest in the picture) are looked for in a frame
 WIDE = "wide1280"  # the folder (in the models folder) of the detector's copy for that: a picture 1280 across
 WAITING = 600  # pictures and reports that may wait at most
+RETRY_FIRST, RETRY_MOST = 1.0, 60.0  # a stream that cannot be read is tried again after this long, then twice as long each time, at most this
+DOWN_AFTER = 10.0  # no video for this long: the stream counts as down (a drop that mends itself in a moment is not worth a word)
+RAN = 10.0  # a stream that ran this long was a good one: after it the waits start short again
 
 
 def _base36(n: int) -> str:
@@ -87,7 +90,9 @@ class CameraWorker(threading.Thread):
         super().__init__(daemon=True)
         self.engine = engine
         # (the time it started is part of its own track ids, so they are not used again after a restart)
+        self.stamp_ms = stamp_ms
         self.follow = CameraFollow(stamp_ms, epoch=_base36(int(time.time())))
+        self._reopened = False
         self.check = PictureCheck()
         self.emit = emit
         self.items: queue.Queue = queue.Queue(maxsize=WAITING)
@@ -95,6 +100,7 @@ class CameraWorker(threading.Thread):
         self.codec: str | None = None
         self.pace = Pace(getattr(engine, "min_fps", MIN_FPS), getattr(engine, "idle_every", IDLE_EVERY), getattr(engine, "far_every", FAR_EVERY))
         self.lost = 0
+        self.restarts = 0  # times the following started afresh because the camera's clock did
         self.look_ms: deque = deque(maxlen=300)
         self.far_ms: deque = deque(maxlen=300)  # the looks that include the sharper one for people far off
         self._pace_state = self.pace.state(0.0)
@@ -127,9 +133,13 @@ class CameraWorker(threading.Thread):
 
     def _one(self, item) -> None:
         if isinstance(item, VideoTrack):  # a stream has just been opened
+            if self.decoder is not None:  # ... anew, after a drop
+                self._reopened = True
+                self.pace.reopened(time.monotonic())
             self.decoder, self.codec = Decoder(item.codec, item.parameter_sets), item.codec
             return
         if item[0] == "report":
+            self._pace_state = self.pace.state(time.monotonic())  # (reports come whether or not frames do)
             for packet in self.follow.report(item[1], item[2]):
                 self.emit(self._rated(packet), "auto")
             if self.follow.last_report is not None:
@@ -139,6 +149,15 @@ class CameraWorker(threading.Thread):
         if self.decoder is None:
             return
         for rtp, frame in self.decoder.decode(unit):
+            if self._reopened:
+                self._reopened = False
+                if not self.follow.continues(rtp, at):
+                    # the camera's clock started over (it was restarted): everything held of it is from
+                    # another time, so the following starts afresh, under new track ids
+                    stats = self.follow.stats
+                    self.follow = CameraFollow(self.stamp_ms, epoch=_base36(int(time.time())))
+                    self.follow.stats.update({key: stats[key] for key in ("frames", "reports", "sent")})
+                    self.restarts += 1
             bench = getattr(self.engine, "bench", None)
             if bench is not None:
                 bench.offer(frame, self.follow.reported_moving() if bench.state == "collecting" else None)  # (bench.py)
@@ -172,20 +191,33 @@ class CameraWorker(threading.Thread):
         return {
             "codec": self.codec, **pace, "look_ms": round(looks[len(looks) // 2], 1) if looks else None,
             "far_look_ms": round(fars[len(fars) // 2], 1) if fars else None,
-            "lost": self.lost, **self.follow.stats,
+            "lost": self.lost, "restarts": self.restarts, **self.follow.stats,
             "check": self.check.result(), "head_start": self.follow.head_start(), "local": dict(self.follow.local.stats),
             "face_boxes": self.follow.local.faces.stats(),
         }
 
 
 class Camera:
-    """A camera while it is watched."""
+    """A camera while it is watched.
 
-    def __init__(self, engine, source: str, stamp_ms: float, emit: Callable[[dict[str, Any], str], None]) -> None:
+    Its stream may drop: it is opened again, after a wait that doubles each
+    time up to a minute, for as long as the camera is to be watched (whether
+    it is worth watching is for Home Assistant to say: a camera that has gone
+    offline or been removed is told to sleep). A drop that lasts is said once
+    (`stream`: "down", in the log and through `changed`), and so is its end;
+    the tries in between are not. The address is never logged."""
+
+    def __init__(self, engine, source: str, stamp_ms: float, emit: Callable[[dict[str, Any], str], None],
+                 changed: Callable[[], None] | None = None) -> None:
         self.worker = CameraWorker(engine, stamp_ms, emit)
         self.worker.start()
         self.error: str | None = None
         self.opened = 0
+        self.open = False  # video is coming
+        self.down = False  # ... and has not been for a while
+        self.retry = RETRY_FIRST  # the wait before the next try (seconds)
+        self._since = time.monotonic()  # since when there is no video
+        self._changed = changed
         self._task = asyncio.create_task(self._read(source))
 
     def report(self, packet: dict[str, Any]) -> None:
@@ -194,27 +226,64 @@ class Camera:
     async def stop(self) -> None:
         self._task.cancel()
         await asyncio.gather(self._task, return_exceptions=True)
+        self.open = False
         self.worker.stop()
+
+    def _up(self) -> None:
+        self.open, self.error = True, None
+        if self.down:
+            self.down = False
+            log.info("A camera's stream is back (after %d s)", time.monotonic() - self._since)
+            self._tell()
+
+    def _failed(self, error: str) -> None:
+        now = time.monotonic()
+        if self.open:
+            self.open, self._since = False, now
+        self.error = error
+        if not self.down and now - self._since >= DOWN_AFTER:
+            self.down = True
+            log.info("A camera's stream is down (%s): trying again, at most every %d s", error, RETRY_MOST)
+            self._tell()
+
+    def _tell(self) -> None:
+        if self._changed is not None:
+            try:
+                self._changed()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _read(self, source: str) -> None:
         """Keep reading the video; start over after a drop."""
-        backoff = 1.0
         while True:
+            started = time.monotonic()
             try:
                 async with RtspReader(source) as reader:
                     self.opened += 1
-                    self.error = None
-                    backoff = 1.0
                     self.worker.put(reader.track)
                     depack = Depacketizer(reader.track.codec)
                     async for packet in reader.packets():
+                        if not self.open:
+                            self._up()
                         for unit in depack.push(packet):
                             self.worker.put((unit, time.time() * 1000))
-                self.error = "the stream ended"
+                error = "the stream ended"
             except RtspError as err:
-                self.error = str(err)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 15.0)
+                error = str(err)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # noqa: BLE001 - a connection cut in the middle, or anything else: tried again all the same
+                error = type(err).__name__  # (never the message: it may name the address)
+            if self.open and time.monotonic() - started >= RAN:
+                self.retry = RETRY_FIRST
+            self._failed(error)
+            await asyncio.sleep(self.retry)
+            self.retry = min(self.retry * 2, RETRY_MOST)
 
     def state(self) -> dict[str, Any]:
-        return {"error": self.error, "opened": self.opened, **self.worker.state()}
+        stream = "open" if self.open else "down" if self.down else "opening"
+        return {
+            "error": self.error, "opened": self.opened, "stream": stream,
+            "down_s": None if self.open else round(time.monotonic() - self._since), "retry_s": None if self.open else self.retry,
+            **self.worker.state(),
+        }

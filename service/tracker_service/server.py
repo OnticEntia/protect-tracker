@@ -6,7 +6,15 @@ integration connects to.
               {"type": "sleep",  "camera": id}
   it is sent  {"type": "tracks", "camera": id, "mode": "auto" | "local", "packet": <boxes for one frame, in the reports' shape>}
               ("auto": what Protect reported, refined; "local": what the service sees, on its own word)
-              {"type": "status", ...}   now and then
+              {"type": "status", ...}   now and then, and at once when a camera's stream goes down or comes back
+
+A camera is held from "watch" to "sleep" and no longer: "sleep" closes its
+stream and drops everything held of it (its thread, its tracks, its rates).
+Whether a camera still exists is Home Assistant's to know; when the link
+closes, every camera is dropped, so nothing outlives the Home Assistant that
+asked for it. A stream that cannot be read is tried again, less and less
+often (camera.py), and says so in the status ("stream": "open" | "opening" |
+"down").
 
 The stream address is kept in memory for as long as the camera is watched and
 is never logged. There is no login here: the service listens on this machine
@@ -132,7 +140,8 @@ class Service:
                 await old.stop()
             stamp = data.get("stamp")
             stamp = float(stamp) if isinstance(stamp, (int, float)) else DEFAULT_STAMP
-            self.cameras[cam] = Camera(self.engine, data["source"], stamp, lambda packet, mode, cam=cam: self._emit(cam, out, packet, mode))
+            self.cameras[cam] = Camera(self.engine, data["source"], stamp, lambda packet, mode, cam=cam: self._emit(cam, out, packet, mode),
+                                       lambda: out.put_nowait(json.dumps(self.status())))  # a stream down, or back: said at once
             log.info("Watching a camera (%d now)", len(self.cameras))
         elif kind == "sleep":
             old = self.cameras.pop(cam, None)

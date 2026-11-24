@@ -137,6 +137,7 @@ class CameraFollow:
         self._born_at: dict[int, float] = {}  # local track -> when (our wall clock) it was first found
         self._bound_ever: set[int] = set()
         self._busy = 0.0  # our clock: when something last moved
+        self._frame_at: float | None = None  # when (wall clock, ms) the newest frame came
 
     # ----------------------------------------------------------- the clocks
 
@@ -145,6 +146,16 @@ class CameraFollow:
         if self._base is None:
             self._base = now_ms - ms
         return self._base + ms
+
+    def continues(self, rtp: int, now_ms: float, slack_ms: float = 5000.0) -> bool:
+        """Does a frame with this timestamp go on from the last one, on the
+        same clock? After a stream has been opened anew it need not: a camera
+        that was restarted starts its clock over, and nothing held of it
+        (tracks, times) means anything then."""
+        if self._rtp is None or self._frame_at is None:
+            return True
+        step = (((rtp - self._rtp) + (1 << 31)) % (1 << 32) - (1 << 31)) / 90.0
+        return abs(step - (now_ms - self._frame_at)) <= slack_ms
 
     def _tie(self, now_ms: float) -> None:
         """Tie Protect's clock to ours, from the newest frame."""
@@ -286,7 +297,11 @@ class CameraFollow:
         """One frame's boxes ({kind: [(x1, y1, x2, y2, score)]}) and its RTP
         timestamp. Returns the packet to send for it, if any."""
         when = self._own(rtp, now_ms)
-        self._rtp = rtp
+        self._rtp, self._frame_at = rtp, now_ms
+        # Protect has stopped reporting (its feed dropped, or the thing has gone): what it last said of a
+        # track is not held on to, bound or not (reports are what clears these as a rule; none may come)
+        for tid in [tid for tid, t in self.theirs.items() if when - t.reported > END_MS * 4]:
+            del self.theirs[tid]
         self.stats["frames"] += 1
         seen_tracks = self.tracker.update(when, found)
         seen = {t.id for t in seen_tracks}

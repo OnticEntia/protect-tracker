@@ -90,14 +90,14 @@ def packetize(codec: str, frames: list[bytes], first_ts: int, step: int = 3000, 
 class FakeCamera:
     """An RTSP server that plays the given RTP packets once, then hangs up."""
 
-    def __init__(self, codec: str, packets: list[bytes], path: str = "/stream", pace: float = 0.0) -> None:
-        self.codec, self.packets, self.path = codec, packets, path
+    def __init__(self, codec: str, packets: list[bytes], path: str = "/stream", pace: float = 0.0, port: int = 0) -> None:
+        self.codec, self.packets, self.path, self.port = codec, packets, path, port
         self.pace = pace  # seconds between frames (0: everything at once)
         self.asked: list[str] = []
         self.server: asyncio.AbstractServer | None = None
 
     async def __aenter__(self) -> FakeCamera:
-        self.server = await asyncio.start_server(self._client, "127.0.0.1", 0)
+        self.server = await asyncio.start_server(self._client, "127.0.0.1", self.port)
         self.port = self.server.sockets[0].getsockname()[1]
         return self
 
