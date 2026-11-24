@@ -12,7 +12,7 @@ One per camera that recognises things, on the camera's own device.
 
 It is unavailable while the service is not reached, and while its camera is
 offline or its stream cannot be read. A camera adopted later gets its sensor
-without a restart. When a camera is removed from Protect, the UniFi Protect
+without a restart, as soon as the UniFi Protect integration has made its device. When a camera is removed from Protect, the UniFi Protect
 integration removes the camera's device and this sensor goes with it; should
 the device be left for any reason, the sensor removes itself all the same.
 """
@@ -26,6 +26,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import TrackerHub
@@ -38,10 +39,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     @callback
     def add(camera: str) -> None:
+        if camera in made:
+            return
         mac = hub.macs.get(camera)
-        if mac and camera not in made:
+        # (the sensor belongs on the camera's own device, which the UniFi Protect integration makes: a camera
+        # just adopted may not have it yet, and a device made here would have no name to call the sensor by)
+        device = dr.async_get(hass).async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))}) if mac else None
+        if device is not None:
             made.add(camera)
-            async_add_entities([PersonSeen(hub, camera, mac, entry.entry_id, lambda: made.discard(camera))])
+            sensor = PersonSeen(hub, camera, mac, entry.entry_id, lambda: made.discard(camera))
+            name = device.name_by_user or device.name
+            if name:  # its id says which camera it is of (one already there keeps the id it has)
+                sensor.entity_id = async_generate_entity_id("binary_sensor.{}", f"{name} person seen", hass=hass)
+            async_add_entities([sensor])
 
     hub.add_sensor = add  # cameras adopted from here on
     entry.async_on_unload(lambda: setattr(hub, "add_sensor", None))

@@ -82,6 +82,7 @@ _LOGGER = logging.getLogger(__name__)
 CHECK = timedelta(seconds=2)
 PLATFORMS = ["binary_sensor"]
 SEEN_HOLD_S = 3.0  # "person seen" stays on this long after the service's last box of a person
+REASK_S = 30.0  # while a camera's stream is down its address is asked for again this often (it may have changed)
 HOLD_S = 0.7  # Protect's box of a thing is held back this long after the service's last box of it
 
 
@@ -126,10 +127,11 @@ def _connected(cam: Any) -> bool:
     return bool(getattr(cam, "is_connected", True))
 
 
-def cameras_now(hass: HomeAssistant, api: Any, channel: int) -> dict[str, str] | None:
+def cameras_now(hass: HomeAssistant, api: Any, channel: int, streams: dict[str, tuple[str, int]] | None = None) -> dict[str, str] | None:
     """The cameras this Protect has that recognise things, and how each
     stands (roster.py). None when Protect cannot be asked (the UniFi Protect
-    integration isn't loaded just now)."""
+    integration isn't loaded just now). `streams` is filled with the stream
+    each ready camera is to be watched by: (entity id, channel)."""
     if api is None:
         return None
     by_uid = camera_entities(hass)
@@ -144,10 +146,12 @@ def cameras_now(hass: HomeAssistant, api: Any, channel: int) -> dict[str, str] |
             continue
         if not _connected(cam):
             out[cam.id] = OFFLINE
-        elif stream_entity(hass, api, cam.id, channel, by_uid) is None:
+        elif (found := stream_entity(hass, api, cam.id, channel, by_uid)) is None:
             out[cam.id] = NO_STREAM
         else:
             out[cam.id] = READY
+            if streams is not None:
+                streams[cam.id] = found
     return out
 
 
@@ -185,6 +189,7 @@ class TrackerHub:
         self.add_sensor: Callable[[str], None] | None = None  # (binary_sensor.py) makes a camera's sensor
         self.gone_listeners: dict[str, set[Callable[[], None]]] = {}  # camera -> told when it is removed for good
         self._ends: dict[Send, Callable[[], None]] = {}  # a listener -> what ends its subscription
+        self._streams: dict[str, tuple[str, int]] = {}  # camera -> the stream it is to be watched by just now: (entity, channel)
         self._waking: set[str] = set()  # cameras whose stream address is being fetched just now
         self._relay_failed: Any = None  # the relay that could not be listened to (said once)
         self._was_linked = False
@@ -217,15 +222,17 @@ class TrackerHub:
             self._detach()
             self._relay = relay
         api = _protect_api(self.hass)
-        for camera, was, now in self.roster.update(cameras_now(self.hass, api, self.channel)):
+        streams: dict[str, tuple[str, int]] = {}
+        seen = cameras_now(self.hass, api, self.channel, streams)
+        if seen is not None:
+            self._streams = streams
+        for camera, was, now in self.roster.update(seen):
             if now is None:
                 self._removed(camera)
             elif was is None:
                 cam = api.bootstrap.cameras.get(camera) if api is not None else None
                 self.macs[camera] = getattr(cam, "mac", None) or ""
                 _LOGGER.info("A camera has been taken up (%d now)", len(self.roster.cameras))
-                if self.add_sensor is not None:
-                    self.add_sensor(camera)
             elif now == READY:
                 _LOGGER.info("A camera is back")
                 self._say(camera, "online")
@@ -234,6 +241,9 @@ class TrackerHub:
                 self._let_go(camera)
                 self._say(camera, "offline", now)
             self._seen_changed(camera)
+        if self.add_sensor is not None:  # (a camera just adopted gets its sensor once its device is there: asked again until then)
+            for camera in self.roster.cameras:
+                self.add_sensor(camera)
         # an offline camera has nothing to report; listening would only be knocking at its door
         wanted = {cam for cam, state in self.roster.cameras.items() if state != OFFLINE} if relay is not None and relay is not self._relay_failed else set()
         for camera in set(self._unsubs) - wanted:
@@ -327,8 +337,11 @@ class TrackerHub:
         if camera in self.waker.awake:
             self.link.send({"type": "report", "camera": camera, "packet": payload})
 
-    async def _watch(self, camera: str) -> None:
-        """Tell the service to watch a camera."""
+    async def _watch(self, camera: str, again: bool = False) -> None:
+        """Tell the service to watch a camera. `again`: it is being watched,
+        but its stream may be another by now (the stream wanted has become
+        available, or the address has changed while the service could not
+        read it): told anew only if so."""
         if not self.link.connected or camera in self._waking or self.roster.cameras.get(camera) != READY:
             return
         self._waking.add(camera)
@@ -346,8 +359,13 @@ class TrackerHub:
                 return
             if camera not in self.waker.awake or self.roster.cameras.get(camera) != READY:
                 return  # gone quiet, or gone, meanwhile
+            key, held = hash(source), self.watching.get(camera)
+            if again and held is not None and held["entity"] == entity and held["key"] == key:
+                held["asked"] = time.monotonic()  # the same as before: the service goes on trying it
+                return
             if self.link.send({"type": "watch", "camera": camera, "source": source, "channel": channel, "stamp": STAMP_MS.get(channel, self.stamp)}):
-                self.watching[camera] = {"entity": entity, "channel": channel, "since": time.time()}
+                # (of the address only a number to tell a change by is kept)
+                self.watching[camera] = {"entity": entity, "channel": channel, "since": time.time(), "key": key, "asked": time.monotonic()}
         finally:
             self._waking.discard(camera)
 
@@ -376,6 +394,13 @@ class TrackerHub:
             for camera in list(self.waker.awake):
                 if camera not in self.watching and camera not in self._waking:
                     self.hass.async_create_task(self._watch(camera))
+            # watched, but by a stream that is no longer the one to use (a camera just adopted gets its streams
+            # one after another), or by an address the service cannot read (it may have been given a new one)
+            for camera, held in list(self.watching.items()):
+                found = self._streams.get(camera)
+                changed = found is not None and found[0] != held["entity"]
+                if changed or (camera in self.stream_down and time.monotonic() - held["asked"] > REASK_S):
+                    self.hass.async_create_task(self._watch(camera, again=True))
 
     # ------------------------------------------------------ the service
 
@@ -493,7 +518,7 @@ class TrackerHub:
             "reports": self._relay is not None and bool(self._unsubs),
             "cameras": sorted(self.roster.cameras),
             "states": {cam: self.state(cam) for cam in sorted(self.roster.cameras)},
-            "watching": {cam: dict(info) for cam, info in self.watching.items()},
+            "watching": {cam: {k: info[k] for k in ("entity", "channel", "since")} for cam, info in self.watching.items()},
             "listeners": {f"{cam} {mode}": len(sends) for (cam, mode), sends in self.listeners.items()},
             "seen": {cam: {k: v for k, v in info.items() if k != "at"} for cam, info in self.seen.items()},
             "always": self.always,

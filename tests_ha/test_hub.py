@@ -243,10 +243,24 @@ class _Api:
         cameras = {"cam1": _Cam()}
 
 
+def device_of(hass, mac="AA:BB:CC:00:11:22"):
+    """The camera's device, as the UniFi Protect integration makes it."""
+    from homeassistant.helpers import device_registry as dr
+
+    theirs = next(iter(hass.config_entries.async_entries("unifiprotect")), None)
+    if theirs is None:
+        theirs = MockConfigEntry(domain="unifiprotect")
+        theirs.add_to_hass(hass)
+    return dr.async_get(hass).async_get_or_create(
+        config_entry_id=theirs.entry_id, connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))}, name="Somewhere"
+    )
+
+
 async def test_person_seen_sensor(hass, socket_enabled, unused_tcp_port):
     service = Service()
     await service.start(unused_tcp_port)
     hass.config.components.update({"camera", "unifiprotect"})
+    device_of(hass)
     entry = MockConfigEntry(domain=DOMAIN, options={"url": f"ws://127.0.0.1:{unused_tcp_port}/link", "stream": "medium", "always": True})
     entry.add_to_hass(hass)
     with patch("custom_components.protect_tracker._protect_api", return_value=_Api()), patch(
@@ -314,6 +328,8 @@ class Going:
         await self.service.start(self.port)
         self.hass.config.components.update({"camera", "unifiprotect"})
         self.hass.data["protect_detections"] = self.relay
+        for cam in self.protect.cameras.values():
+            device_of(self.hass, cam.mac)
         self.entry = MockConfigEntry(domain=DOMAIN, options={"url": f"ws://127.0.0.1:{self.port}/link", "stream": "medium", "always": True})
         self.entry.add_to_hass(self.hass)
         self.patches = [
@@ -439,7 +455,54 @@ async def test_a_camera_adopted_later_is_taken_up_without_a_restart(hass, socket
         await it.check(2)
         assert (await it.service.wait_for("watch"))[0]["camera"] == "cam9"
         assert it.hub.status()["states"] == {"cam9": "watching"} and "cam9" in it.relay.listeners
-        assert it.sensor() and hass.states.get(it.sensor()).state == "off"
+        assert it.sensor() is None  # its device is not there yet: the sensor waits for it
+        device_of(hass, "AA:BB:CC:00:11:99")
+        await it.check()
+        assert it.sensor() == "binary_sensor.somewhere_person_seen" and hass.states.get(it.sensor()).state == "off"
+
+
+async def test_a_camera_still_settling_is_waited_for_quietly(hass, socket_enabled, unused_tcp_port, caplog):
+    async with Going(hass, unused_tcp_port, Protect()) as it:
+        # adopted, but none of its streams has a camera entity yet, and then no address for a while
+        with patch("custom_components.protect_tracker.stream_entity", return_value=None):
+            it.protect.cameras["cam9"] = Cam("cam9", "AA:BB:CC:00:11:99")
+            await it.check(5)
+            assert it.hub.status()["states"] == {"cam9": "no_stream"} and it.service.got == []
+        with patch("custom_components.protect_tracker.async_get_stream_source", return_value=None):
+            await it.check(5)
+            await asyncio.sleep(0.05)
+            assert it.hub.status()["states"] == {"cam9": "asleep"} and it.service.got == []
+        # only its main stream at first: that is watched, and the stream wanted is taken as soon as it is there
+        with patch("custom_components.protect_tracker.stream_entity", return_value=("camera.somewhere_high", 0)):
+            await it.check(2)
+            assert (await it.service.wait_for("watch"))[0]["channel"] == 0
+        await it.check(2)
+        watches = await it.service.wait_for("watch", 2)
+        assert watches[1]["channel"] == 1 and it.hub.status()["watching"]["cam9"]["channel"] == 1
+        await it.check(10)
+        assert len([m for m in it.service.got if m["type"] == "watch"]) == 2  # and then it is left at that
+    assert not [r for r in caplog.records if r.name.startswith("custom_components.protect_tracker") and r.levelname in ("WARNING", "ERROR")]
+
+
+async def test_a_new_address_is_taken_up_while_the_stream_is_down(hass, socket_enabled, unused_tcp_port):
+    async with Going(hass, unused_tcp_port, Protect(Cam())) as it:
+        await it.check()
+        await it.service.wait_for("watch")
+        await it.service.ws.send_json({"type": "status", "cameras": {"cam1": {"stream": "down"}}})
+        for _ in range(100):
+            if it.hub.stream_down:
+                break
+            await asyncio.sleep(0.02)
+        it.hub.watching["cam1"]["asked"] -= 60  # it has been down a while: the address is asked for again
+        await it.check()
+        await asyncio.sleep(0.05)
+        assert len([m for m in it.service.got if m["type"] == "watch"]) == 1  # the same address: the service is left to its tries
+        it.hub.watching["cam1"]["asked"] -= 60
+        with patch("custom_components.protect_tracker.async_get_stream_source", return_value="rtsps://console.invalid:7441/NEWKEY"):
+            await it.check()
+            watches = await it.service.wait_for("watch", 2)
+        assert watches[1]["source"].endswith("NEWKEY")  # another address: told at once
+        assert "KEY" not in str(it.hub.status())
 
 
 async def test_a_stream_the_service_cannot_read_is_said(hass, socket_enabled, unused_tcp_port, hass_ws_client):

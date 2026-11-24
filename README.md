@@ -277,12 +277,16 @@ of Home Assistant or of the service.
 | **None of its camera entities is enabled** in Home Assistant | There is no stream to be had: it is not watched (`no_stream`), its sensor is unavailable, and Auto still passes Protect's own boxes on. Enabling an entity again takes it up again. |
 | **A camera is removed from Protect** | Once it has been missing for ten seconds: the service is told to stop for good (the stream is closed, and its thread, tracks and rates are dropped), everything held of it in Home Assistant is dropped, listeners are sent `{"status": "removed", "error": {"code": "camera_removed", ...}}` and their subscriptions are ended, and its sensor is removed. Nothing is ever tried for it again. |
 | **A camera is adopted** | It is taken up within seconds: its sensor is made, and it is watched (at once with "Watch all the time", else from Protect's first report of something moving). |
+| **A camera just adopted is still settling** (no camera entity yet, no stream address yet, only its main stream at first) | It is waited for and asked again every two seconds, without a word in the log above debug. If only another stream than the one chosen is there, that one is watched, and the chosen one is taken as soon as its entity appears. Its sensor is made once the UniFi Protect integration has made the camera's device, and is named after it. |
+| **A stream's address changes** while the service cannot read it | The address is asked for again every 30 s while the stream is down, and the service is told the new one at once; the same address is left to the service's own tries. |
 | **The UniFi Protect integration is reloading** or cannot be asked | Nothing is concluded from that at first. If it lasts a minute, every camera counts as offline until it is back; none is ever removed on that account. |
 | **A camera is restarted** (its clock starts over) | The service notices on the first frame after the stream is back, and starts following afresh under new track ids. |
 
 When a camera is removed, the UniFi Protect integration removes the camera's device, and the "Person
 seen" sensor goes with it (if the device is left for some reason, the sensor removes itself). A camera
-adopted again later gets a new sensor.
+adopted again later gets a new sensor. Cameras may differ from one another: codec (H.264 or H.265), picture size and
+frame rate are taken from each stream as it is opened. A camera that sends fewer frames than the floor
+has every one of them looked at; that is not "below the floor".
 
 The service holds a camera only from "watch" to "sleep", and drops every camera when Home Assistant's
 connection closes, so nothing in it outlives the Home Assistant that asked for it; a service that still
