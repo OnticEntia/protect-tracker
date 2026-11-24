@@ -282,9 +282,8 @@ of Home Assistant or of the service.
 | **The UniFi Protect integration is reloading** or cannot be asked | Nothing is concluded from that at first. If it lasts a minute, every camera counts as offline until it is back; none is ever removed on that account. |
 | **A camera is restarted** (its clock starts over) | The service notices on the first frame after the stream is back, and starts following afresh under new track ids. |
 
-When a camera is removed, the UniFi Protect integration removes the camera's device, and the "Person
-seen" sensor goes with it (if the device is left for some reason, the sensor removes itself). A camera
-adopted again later gets a new sensor. Cameras may differ from one another: codec (H.264 or H.265), picture size and
+When a camera is removed, its "Person seen" sensor removes itself, together with this integration's
+entry for the camera's device. A camera adopted again later gets a new sensor. Cameras may differ from one another: codec (H.264 or H.265), picture size and
 frame rate are taken from each stream as it is opened. A camera that sends fewer frames than the floor
 has every one of them looked at; that is not "below the floor".
 

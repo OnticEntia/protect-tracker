@@ -12,9 +12,11 @@ One per camera that recognises things, on the camera's own device.
 
 It is unavailable while the service is not reached, and while its camera is
 offline or its stream cannot be read. A camera adopted later gets its sensor
-without a restart, as soon as the UniFi Protect integration has made its device. When a camera is removed from Protect, the UniFi Protect
-integration removes the camera's device and this sensor goes with it; should
-the device be left for any reason, the sensor removes itself all the same.
+without a restart, as soon as the UniFi Protect integration has made its
+device. When a camera is removed from Protect the sensor removes itself, and
+with it this integration's hold on the camera's device (where the device is
+shared with the UniFi Protect integration, that one's removing it takes the
+sensor along first).
 """
 
 from __future__ import annotations
@@ -44,10 +46,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         mac = hub.macs.get(camera)
         # (the sensor belongs on the camera's own device, which the UniFi Protect integration makes: a camera
         # just adopted may not have it yet, and a device made here would have no name to call the sensor by)
-        device = dr.async_get(hass).async_get_device(connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))}) if mac else None
+        device = _their_device(hass, mac) if mac else None
         if device is not None:
             made.add(camera)
-            sensor = PersonSeen(hub, camera, mac, entry.entry_id, lambda: made.discard(camera))
+            sensor = PersonSeen(hub, camera, mac, entry.entry_id, lambda: made.discard(camera), device)
             name = device.name_by_user or device.name
             if name:  # its id says which camera it is of (one already there keeps the id it has)
                 sensor.entity_id = async_generate_entity_id("binary_sensor.{}", f"{name} person seen", hass=hass)
@@ -59,19 +61,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         add(camera)
 
 
+def _their_device(hass: HomeAssistant, mac: str) -> dr.DeviceEntry | None:
+    """The camera's device as the UniFi Protect integration has made it."""
+    devices = dr.async_get(hass)
+    for theirs in hass.config_entries.async_entries("unifiprotect"):
+        device = devices.async_get_device_by_connection((dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac)), theirs.entry_id)
+        if device is not None:
+            return device
+    return None
+
+
 class PersonSeen(BinarySensorEntity):
     _attr_has_entity_name = True
     _attr_name = "Person seen"
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
     _attr_should_poll = False
 
-    def __init__(self, hub: TrackerHub, camera: str, mac: str, entry_id: str, on_removed) -> None:
+    def __init__(self, hub: TrackerHub, camera: str, mac: str, entry_id: str, on_removed, theirs: dr.DeviceEntry | None = None) -> None:
         self._hub = hub
         self._camera = camera
         self._entry_id = entry_id
         self._on_removed = on_removed
         self._attr_unique_id = f"{mac.replace(':', '').upper()}_person_seen"
+        # The camera, by its hardware address. Where Home Assistant keeps a device per integration, this is a
+        # device of this integration's own beside the UniFi Protect one, so it is given the camera's name.
         self._attr_device_info = DeviceInfo(connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))})
+        if theirs is not None and theirs.name:
+            self._attr_device_info.update(name=theirs.name, manufacturer=theirs.manufacturer, model=theirs.model)
 
     @property
     def is_on(self) -> bool:
@@ -102,12 +118,17 @@ class PersonSeen(BinarySensorEntity):
     @callback
     def _gone(self) -> None:
         """The camera is no longer in Protect: the sensor is removed (if the
-        camera's device has not taken it along already), and the device is
-        not held on to on this integration's account."""
+        camera's device has not taken it along already), and so is this
+        integration's hold on the device (its own device, where it has one)."""
         entry = er.async_get(self.hass).async_get(self.entity_id) if self.entity_id else None
         if entry is None:
             return
         er.async_get(self.hass).async_remove(entry.entity_id)
         devices = dr.async_get(self.hass)
-        if entry.device_id and devices.async_get(entry.device_id) is not None:
-            devices.async_update_device(entry.device_id, remove_config_entry_id=self._entry_id)
+        device = devices.async_get(entry.device_id) if entry.device_id else None
+        if device is None:
+            return
+        if device.primary_config_entry == self._entry_id:  # this integration's own device of the camera
+            devices.async_remove_device(device.id)
+        else:  # (a Home Assistant where the device is shared with the UniFi Protect integration: only our part in it)
+            devices.async_update_device(device.id, remove_config_entry_id=self._entry_id)
