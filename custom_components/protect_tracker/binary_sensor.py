@@ -128,7 +128,8 @@ class PersonSeen(BinarySensorEntity):
         device = devices.async_get(entry.device_id) if entry.device_id else None
         if device is None:
             return
-        if device.primary_config_entry == self._entry_id:  # this integration's own device of the camera
+        # (`config_entry_id`: a device has one owner; an older Home Assistant has no such thing, and shares the device)
+        if getattr(device, "config_entry_id", None) == self._entry_id:  # this integration's own device of the camera
             devices.async_remove_device(device.id)
         else:  # (a Home Assistant where the device is shared with the UniFi Protect integration: only our part in it)
             devices.async_update_device(device.id, remove_config_entry_id=self._entry_id)
