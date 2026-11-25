@@ -181,7 +181,38 @@ def test_every_packet_says_whether_the_view_is_moving():
 
     worker = CameraWorker(SquareFinder(), -125.0, lambda packet, mode: None)  # (not started: only what it puts on a packet)
     assert worker._rated({"tracks": []})["view"] == "steady"
-    worker.view.state = "suspect"  # not yet believed: not said
+    worker.view.motion.state = "suspect"  # not yet believed: not said
     assert worker._rated({"tracks": []})["view"] == "steady"
-    worker.view.state = "moving"
+    worker.view.motion.state = "moving"
     assert worker._rated({"tracks": []})["view"] == "moving" and worker.state()["view"]["state"] == "moving"
+
+
+def test_the_view_is_asked_beside_the_cameras_thread_and_holds_up_no_frame():
+    import time
+
+    from scenes import scene as make_scene
+    from tracker_service.camera import ViewWatch
+
+    wide = make_scene()
+    watch = ViewWatch()
+    watch.start()
+    try:
+        assert watch.due(0.0)
+        spent = []
+        for i in range(60):  # six seconds of a jump at the third, a picture every tenth
+            when = i * 100.0
+            assert watch.due(when) and not watch.due(when - 50) if i else True
+            picture = view(wide, X if i < 30 else X + 220, Y, seed=i)
+            started = time.perf_counter()
+            watch.offer(when, picture)
+            spent.append(time.perf_counter() - started)
+            time.sleep(0.004)  # (the comparing has its own time to be done in)
+            if i == 34:
+                assert watch.state == "moving"
+        assert watch.state == "steady" and watch.motion.stats["moves"] == 1
+        assert sorted(spent)[len(spent) // 2] < 0.0005  # leaving a picture costs the camera's thread next to nothing
+        assert watch.motion.stats["checks"] + watch.skipped == 60
+    finally:
+        watch.stop()
+        watch.join(1)
+    assert not watch.is_alive()

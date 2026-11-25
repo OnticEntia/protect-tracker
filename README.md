@@ -323,10 +323,15 @@ in a steady view (leaves, a flag, rain in the lamps) are learnt and left out.
 | A person already being followed | **Held**: they keep their track id and their box for as long as the detector finds them in each frame (the box is on them in the moving picture). If they are not found for half a second (the camera jumped away from them) they are let go at once; no box is drawn where they used to be. |
 | The view at rest for half a second (under a second after an ordinary turn stops; up to four or five after one so slow that only the slowest comparison saw it) | `view: "steady"`. Following **starts afresh**: remembered parked places and fixtures are dropped, every track is dropped except people held through the move, and things are told again by the ordinary rules. Someone first seen during the move is told now. |
 
-**What it costs.** One comparison takes about 0.4 ms on the medium stream (0.06 ms to make the small
-picture, the rest to compare), ten times a second: some 4 ms of one processor core a second for each
-camera, on the camera's own thread and off the graphics card. It takes nothing from the frame-rate
-floor. The status has the measured time per camera (`view.check_ms`).
+**What it costs.** One comparison is about 0.4 ms of work, ten times a second: some 4 ms of one
+processor core a second for each camera, off the graphics card. It is done on a small thread of its
+own beside the camera's: the camera's thread only makes the small picture (about 0.05 ms) and goes on
+with the frame, so the check takes nothing from the frame-rate floor. Beside the service's other
+threads the comparing waits its turn between its many small steps, so by the clock it takes a few
+milliseconds rather than 0.4 (about 3.5 measured live with one camera); that wait is idle time, not
+work, and it delays no frame. The status has both per camera: `view.frame_ms` (what a check costs the
+frame it is asked for) and `view.check_ms` (how long the comparing took by the clock), and
+`view.skipped` (pictures it never got to because the next had come; none, as a rule).
 
 **What it cannot do.**
 

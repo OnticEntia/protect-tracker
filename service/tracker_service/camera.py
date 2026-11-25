@@ -26,7 +26,7 @@ from .pace import MIN_FPS, Pace
 from .rtp import Depacketizer
 from .rtsp import RtspError, RtspReader, VideoTrack
 from .video import Decoder, picture
-from .view import H as VIEW_H, MOVING, W as VIEW_W, ViewMotion
+from .view import EVERY_MS as VIEW_EVERY_MS, H as VIEW_H, MOVING, W as VIEW_W, ViewMotion
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,11 @@ WAITING = 600  # pictures and reports that may wait at most
 RETRY_FIRST, RETRY_MOST = 1.0, 60.0  # a stream that cannot be read is tried again after this long, then twice as long each time, at most this
 DOWN_AFTER = 10.0  # no video for this long: the stream counts as down (a drop that mends itself in a moment is not worth a word)
 RAN = 10.0  # a stream that ran this long was a good one: after it the waits start short again
+
+
+def _median(values) -> float | None:
+    values = sorted(values)
+    return round(values[len(values) // 2], 2) if values else None
 
 
 def _base36(n: int) -> str:
@@ -86,6 +91,64 @@ class Engine:
         return found
 
 
+class ViewWatch(threading.Thread):
+    """Is the camera's whole view moving (view.py), asked on a thread of its
+    own. The camera's thread only makes the small picture (a twentieth of a
+    millisecond) and leaves it here; the comparing, which is many small steps
+    that each may have to wait their turn beside the other threads, then
+    holds up no frame. The answer (`state`) is a few milliseconds behind the
+    picture it is of, which is nothing to a check made ten times a second.
+    Only the newest picture left is looked at: one not yet looked at when the
+    next comes is dropped."""
+
+    def __init__(self) -> None:
+        super().__init__(daemon=True)
+        self.motion = ViewMotion()
+        self.ms: deque = deque(maxlen=300)  # how long a comparison took, waiting included
+        self.skipped = 0
+        self._newest: tuple[float, Any] | None = None
+        self._offered: float | None = None
+        self._wake = threading.Event()
+        self._stopped = False
+
+    @property
+    def state(self) -> str:
+        return self.motion.state
+
+    def due(self, when: float) -> bool:
+        return self._offered is None or when - self._offered >= VIEW_EVERY_MS or when < self._offered
+
+    def offer(self, when: float, grey) -> None:
+        if self._newest is not None:
+            self.skipped += 1
+        self._offered, self._newest = when, (when, grey)
+        self._wake.set()
+
+    def afresh(self) -> None:
+        """The camera's clock started over: nothing held means anything."""
+        self.motion = ViewMotion()
+
+    def stop(self) -> None:
+        self._stopped = True
+        self._wake.set()
+
+    def run(self) -> None:
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            if self._stopped:
+                return
+            newest, self._newest = self._newest, None
+            if newest is None:
+                continue
+            started = time.perf_counter()
+            try:
+                self.motion.frame(*newest)
+            except Exception:  # noqa: BLE001 - one bad picture is no reason to stop asking
+                log.debug("A view check failed", exc_info=True)
+            self.ms.append((time.perf_counter() - started) * 1000)
+
+
 class CameraWorker(threading.Thread):
     def __init__(self, engine, stamp_ms: float, emit: Callable[[dict[str, Any], str], None]) -> None:
         super().__init__(daemon=True)
@@ -95,8 +158,8 @@ class CameraWorker(threading.Thread):
         self.follow = CameraFollow(stamp_ms, epoch=_base36(int(time.time())))
         self._reopened = False
         self.check = PictureCheck()
-        self.view = ViewMotion()  # is the whole view moving (a camera that turns or zooms)
-        self.view_ms: deque = deque(maxlen=300)  # what that check costs, each time it is made
+        self.view = ViewWatch()  # is the whole view moving (a camera that turns or zooms): asked beside this thread
+        self.view_ms: deque = deque(maxlen=300)  # what asking costs this thread, each time (making the small picture)
         self.emit = emit
         self.items: queue.Queue = queue.Queue(maxsize=WAITING)
         self.decoder: Decoder | None = None
@@ -107,6 +170,10 @@ class CameraWorker(threading.Thread):
         self.look_ms: deque = deque(maxlen=300)
         self.far_ms: deque = deque(maxlen=300)  # the looks that include the sharper one for people far off
         self._pace_state = self.pace.state(0.0)
+
+    def start(self) -> None:
+        self.view.start()
+        super().start()
 
     def put(self, item) -> bool:
         try:
@@ -128,6 +195,7 @@ class CameraWorker(threading.Thread):
         while True:
             item = self.items.get()
             if item is None:
+                self.view.stop()
                 return
             try:
                 self._one(item)
@@ -160,7 +228,7 @@ class CameraWorker(threading.Thread):
                     stats = self.follow.stats
                     self.follow = CameraFollow(self.stamp_ms, epoch=_base36(int(time.time())))
                     self.follow.stats.update({key: stats[key] for key in ("frames", "reports", "sent")})
-                    self.view = ViewMotion()
+                    self.view.afresh()
                     self.restarts += 1
             bench = getattr(self.engine, "bench", None)
             if bench is not None:
@@ -168,7 +236,7 @@ class CameraWorker(threading.Thread):
             # is the view itself moving? Asked a few times a second, of every frame that comes (looked at or not)
             if self.view.due(rtp / 90.0):
                 started = time.perf_counter()
-                self.view.frame(rtp / 90.0, frame.to_ndarray(format="gray", width=VIEW_W, height=VIEW_H))
+                self.view.offer(rtp / 90.0, frame.to_ndarray(format="gray", width=VIEW_W, height=VIEW_H))
                 self.view_ms.append((time.perf_counter() - started) * 1000)
             now = time.monotonic()
             plan = self.pace.plan(max(0.0, time.time() - at / 1000.0), self.follow.busy(), now)
@@ -204,8 +272,11 @@ class CameraWorker(threading.Thread):
             "lost": self.lost, "restarts": self.restarts, **self.follow.stats,
             "check": self.check.result(), "head_start": self.follow.head_start(), "local": dict(self.follow.local.stats),
             "face_boxes": self.follow.local.faces.stats(),
-            "view": {"state": "moving" if self.view.state == MOVING else "steady", **self.view.stats, "moving_ms": round(self.view.stats["moving_ms"]),
-                     "check_ms": round(sorted(self.view_ms)[len(self.view_ms) // 2], 2) if self.view_ms else None},
+            # frame_ms: what a check costs the frame it is asked for; check_ms: how long the comparing then takes on its
+            # own thread, waiting its turn included (the work itself is about 0.4); skipped: pictures it never got to
+            "view": {"state": "moving" if self.view.state == MOVING else "steady", **self.view.motion.stats,
+                     "moving_ms": round(self.view.motion.stats["moving_ms"]),
+                     "frame_ms": _median(self.view_ms), "check_ms": _median(self.view.ms), "skipped": self.view.skipped},
         }
 
 

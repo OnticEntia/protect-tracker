@@ -52,7 +52,10 @@ that half minute; turns are not that long.
 What it cannot tell: a thing that fills nearly the whole picture as it passes
 looks like the view moving, for as long as it does.
 
-Plain numpy; a comparison takes a fraction of a millisecond (README).
+Plain numpy; a comparison takes a fraction of a millisecond of work (README).
+In the service it is done on a thread of its own (camera.py: ViewWatch): it
+is many small steps, and beside other busy threads each step may wait its
+turn, which would otherwise hold up the frame it was asked for.
 """
 
 from __future__ import annotations
@@ -64,7 +67,8 @@ import numpy as np
 W, H = 160, 90  # the small picture
 BW, BH = 16, 15  # a block: 10 x 6 of them
 COLS, ROWS = W // BW, H // BH
-EVERY_MS = 100  # a comparison this often
+EVERY_MS = 90  # a comparison this often: every third frame of a camera sending thirty a second (their times are not
+# exact to the millisecond, and a hundred would as often as not make it every fourth)
 LAGS_MS = (300, 1500, 4000)  # ... with the picture this long ago
 TEXTURE = 3.0  # a block has edges of a kind when brightness steps that way by at least this much on the whole (of 255)
 SAME = 0.5  # a block is where it was when its edges agree at least this well with a moment ago (-1..1)
