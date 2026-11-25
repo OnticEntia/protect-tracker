@@ -126,3 +126,25 @@ def test_it_costs_next_to_nothing():
     for i, pic in enumerate(pictures):
         motion.frame(i * 100.0, pic)
     assert (time.perf_counter() - started) / len(pictures) < 0.005  # (it is about a third of a millisecond; this is slack for a busy machine)
+
+
+def test_a_stream_that_has_just_opened_is_not_the_view_moving():
+    # nothing to compare the first pictures with, and the picture brightening over the first seconds (exposure
+    # finding its level, the first key picture being filled in): steady from the first picture on
+    def opening(t, i):
+        return np.clip(view(S, X, Y, seed=i).astype(np.float32) * min(1.0, 0.4 + 0.3 * t), 0, 255).astype(np.uint8)
+
+    motion = ViewMotion()
+    assert all(state == STEADY for _, state in run(opening, 8, motion=motion))
+    assert motion.stats["moves"] == 0
+
+
+def test_a_stream_opened_again_on_the_same_view_is_not_the_view_moving():
+    motion = ViewMotion()
+    assert all(state == STEADY for _, state in run(steady, 6, motion=motion))
+    # ... twenty seconds without pictures, then the same clock goes on
+    again = [motion.frame(26000.0 + i * 100.0, view(S, X, Y, seed=500 + i)) for i in range(60)]
+    assert all(state == STEADY for state in again) and motion.stats["moves"] == 0
+    # ... and a camera whose clock started over
+    anew = [motion.frame(i * 100.0, view(S, X, Y, seed=900 + i)) for i in range(60)]
+    assert all(state == STEADY for state in anew) and motion.stats["moves"] == 0

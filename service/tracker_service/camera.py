@@ -35,6 +35,7 @@ IDLE_EVERY = 1  # while nothing moves, one frame in this many is looked at. 1: e
 FAR_EVERY = 1  # one frame in this many gets the sharp look (the picture at twice the size) in place of the ordinary one
 FACES_AT_ONCE = 3  # the faces of this many people (the biggest in the picture) are looked for in a frame
 WIDE = "wide1280"  # the folder (in the models folder) of the detector's copy for that: a picture 1280 across
+SAID_AN_HOUR = 20  # moves of the view said in the log in an hour, at most
 WAITING = 600  # pictures and reports that may wait at most
 RETRY_FIRST, RETRY_MOST = 1.0, 60.0  # a stream that cannot be read is tried again after this long, then twice as long each time, at most this
 DOWN_AFTER = 10.0  # no video for this long: the stream counts as down (a drop that mends itself in a moment is not worth a word)
@@ -99,11 +100,20 @@ class ViewWatch(threading.Thread):
     holds up no frame. The answer (`state`) is a few milliseconds behind the
     picture it is of, which is nothing to a check made ten times a second.
     Only the newest picture left is looked at: one not yet looked at when the
-    next comes is dropped."""
+    next comes is dropped.
+
+    Each time the view starts moving and each time it has come to rest is a
+    line in the log (with how long it moved), so that what the camera did can
+    be read there afterwards. A camera that moves all day (one on patrol)
+    would fill the log: past SAID_AN_HOUR moves in an hour that is said once
+    and the lines stop, until an hour with fewer."""
 
     def __init__(self) -> None:
         super().__init__(daemon=True)
         self.motion = ViewMotion()
+        self._moving_since: float | None = None  # the time of the picture in which it began to move
+        self._said: deque = deque()  # when (our clock) the last moves were said
+        self._quiet = False  # moving too often to say each time
         self.ms: deque = deque(maxlen=300)  # how long a comparison took, waiting included
         self.skipped = 0
         self._newest: tuple[float, Any] | None = None
@@ -127,6 +137,31 @@ class ViewWatch(threading.Thread):
     def afresh(self) -> None:
         """The camera's clock started over: nothing held means anything."""
         self.motion = ViewMotion()
+        self._moving_since = None
+
+    def check(self, when: float, grey) -> str:
+        """Put one small picture to the question, and say in the log when the answer changes."""
+        was = self.motion.state
+        state = self.motion.frame(when, grey)
+        if state == MOVING and was != MOVING:
+            self._moving_since = when
+            now = time.monotonic()
+            while self._said and now - self._said[0] > 3600:
+                self._said.popleft()
+            self._said.append(now)
+            if len(self._said) <= SAID_AN_HOUR:
+                self._quiet = False
+                log.info("A camera's view is moving")
+            elif not self._quiet:
+                self._quiet = True
+                log.info("A camera's view moves often (more than %d times this hour): not said each time until it does so less; "
+                         "the count is in the status", SAID_AN_HOUR)
+        elif was == MOVING and state != MOVING:
+            if not self._quiet:
+                moved = (when - self._moving_since) / 1000.0 if self._moving_since is not None and when >= self._moving_since else 0.0
+                log.info("A camera's view is steady again (it moved for %.1f s)", moved)
+            self._moving_since = None
+        return state
 
     def stop(self) -> None:
         self._stopped = True
@@ -143,7 +178,7 @@ class ViewWatch(threading.Thread):
                 continue
             started = time.perf_counter()
             try:
-                self.motion.frame(*newest)
+                self.check(*newest)
             except Exception:  # noqa: BLE001 - one bad picture is no reason to stop asking
                 log.debug("A view check failed", exc_info=True)
             self.ms.append((time.perf_counter() - started) * 1000)

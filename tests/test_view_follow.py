@@ -216,3 +216,45 @@ def test_the_view_is_asked_beside_the_cameras_thread_and_holds_up_no_frame():
         watch.stop()
         watch.join(1)
     assert not watch.is_alive()
+
+
+def test_each_move_of_the_view_is_a_line_in_the_log_when_it_begins_and_when_it_ends(caplog):
+    import logging
+
+    from scenes import scene as make_scene
+    from tracker_service import camera
+    from tracker_service.camera import ViewWatch
+
+    wide = make_scene()
+    watch = ViewWatch()  # (not started: asked here, one picture after the other)
+    with caplog.at_level(logging.INFO, logger=camera.log.name):
+        for i in range(60):  # six seconds, a jump to another view at the third
+            watch.check(i * 100.0, view(wide, X if i < 30 else X + 220, Y, seed=i))
+    said = [record.getMessage() for record in caplog.records]
+    assert len(said) == 2 and said[0] == "A camera's view is moving"
+    assert said[1].startswith("A camera's view is steady again (it moved for 0.") or said[1].startswith("A camera's view is steady again (it moved for 1.")
+    # a steady view says nothing
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=camera.log.name):
+        for i in range(60, 120):
+            watch.check(i * 100.0, view(wide, X + 220, Y, seed=i))
+    assert not caplog.records
+
+
+def test_a_camera_that_moves_all_day_does_not_fill_the_log(caplog):
+    import logging
+
+    from scenes import scene as make_scene
+    from tracker_service import camera
+    from tracker_service.camera import SAID_AN_HOUR, ViewWatch
+
+    wide = make_scene()
+    watch = ViewWatch()
+    moves = SAID_AN_HOUR + 10
+    with caplog.at_level(logging.INFO, logger=camera.log.name):
+        for i in range(moves * 30 + 30):  # a jump to and fro every three seconds
+            watch.check(i * 100.0, view(wide, X + (220 if (i // 30) % 2 else 0), Y, seed=i))
+    said = [record.getMessage() for record in caplog.records]
+    assert watch.motion.stats["moves"] == moves
+    assert sum("is moving" in line for line in said) == SAID_AN_HOUR and sum("moves often" in line for line in said) == 1
+    assert len(said) == 2 * SAID_AN_HOUR + 1  # every move said has its end said too, and then no more

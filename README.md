@@ -333,6 +333,11 @@ work, and it delays no frame. The status has both per camera: `view.frame_ms` (w
 frame it is asked for) and `view.check_ms` (how long the comparing took by the clock), and
 `view.skipped` (pictures it never got to because the next had come; none, as a rule).
 
+**In the log.** The service writes a line when a camera's view starts moving and another when it has
+come to rest, with how long it moved, so what a camera did can be read there afterwards. A camera that
+moves more than twenty times in an hour (one on patrol) is said so once, and the lines stop until it
+moves less; `view.moves` in the status goes on counting.
+
 **What it cannot do.**
 
 - A thing that fills nearly the whole picture as it passes (a bus right in front of the lens) looks
