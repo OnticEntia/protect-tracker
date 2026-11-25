@@ -53,7 +53,7 @@ are sent {"status": "removed", "error": {...}} and their subscriptions are
 ended, and its sensor is removed. One that is adopted is taken up without a
 restart.
 
-Every packet with boxes says whether the camera's whole view is moving
+Every message, status messages included, says whether the camera's whole view is moving
 (`view`: "moving" | "steady"; a camera that pans, tilts or zooms, told by the
 service from the picture). A change is also said at once, on its own:
 {"status": "view", "view": ...}.
@@ -289,7 +289,7 @@ class TrackerHub:
         for mode in ("auto", "local"):
             for send in list(self.listeners.pop((camera, mode), ())):
                 try:
-                    send({"status": "removed", "mode": mode, "service": self.link.connected,
+                    send({"status": "removed", "mode": mode, "service": self.link.connected, "view": "steady",
                           "error": {"code": "camera_removed", "message": "This camera is no longer in UniFi Protect"}})
                 except Exception:  # noqa: BLE001
                     pass
@@ -313,7 +313,7 @@ class TrackerHub:
     def _say(self, camera: str, status: str, reason: str | None = None) -> None:
         """Tell whoever listens to a camera how it stands."""
         for mode in ("auto", "local"):
-            payload = {"status": status, "mode": mode, "service": self.link.connected}
+            payload = {"status": status, "mode": mode, "service": self.link.connected, "view": self.view.get(camera, "steady")}
             if reason:
                 payload["reason"] = reason
             self._tell(camera, payload, mode)
@@ -342,7 +342,7 @@ class TrackerHub:
         if not isinstance(payload, dict):
             return
         if payload.get("status"):
-            self._tell(camera, payload)  # (of Protect's feed: nothing the local stream hangs on)
+            self._tell(camera, {**payload, "view": self.view.get(camera, "steady")})  # (of Protect's feed: nothing the local stream hangs on)
             return
         if (camera, "auto") in self.listeners:
             self._tell(camera, self._theirs(camera, payload))
@@ -395,7 +395,7 @@ class TrackerHub:
             if not self.link.connected:  # the service has gone: said to those who rely on it alone
                 for camera, mode in list(self.listeners):
                     if mode == "local":
-                        self._tell(camera, {"status": "disconnected", "mode": "local", "service": False}, "local")
+                        self._tell(camera, {"status": "disconnected", "mode": "local", "service": False, "view": "steady"}, "local")
         if self.always:  # every camera that can be watched stays awake, whether or not Protect's reports are coming
             for camera in self.roster.ready():
                 self.waker.awake[camera] = time.monotonic()
@@ -428,7 +428,7 @@ class TrackerHub:
         self.view.clear()
         for camera, mode in list(self.listeners):
             if mode == "local":  # the service is back
-                self._tell(camera, {"status": "connected", "mode": "local", "service": True}, "local")  # a service just (re)connected watches nothing yet: _check sees to it
+                self._tell(camera, {"status": "connected", "mode": "local", "service": True, "view": "steady"}, "local")  # a service just (re)connected watches nothing yet: _check sees to it
 
     @callback
     def _from_service(self, message: dict[str, Any]) -> None:
@@ -458,6 +458,7 @@ class TrackerHub:
             if camera not in self.watching:
                 return  # of a camera let go meanwhile: nothing of it is passed on or kept
             self._view(camera, message["packet"].get("view"))
+            message["packet"].setdefault("view", self.view.get(camera, "steady"))  # (a service too old to say it)
             if message.get("mode") == "local":  # on the service's own word
                 self._tell(camera, message["packet"], "local")
                 if message["packet"].get("tracks"):
@@ -592,10 +593,10 @@ def ws_live_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConne
 
     connection.send_result(msg["id"])
     connection.subscriptions[msg["id"]] = hub.subscribe(camera, send, mode, lambda: connection.subscriptions.pop(msg["id"], None))
-    send({"status": "connected", "mode": mode, "service": hub.link.connected})
+    send({"status": "connected", "mode": mode, "service": hub.link.connected, "view": hub.view.get(camera, "steady")})
     state = hub.state(camera)
     if state in (OFFLINE, NO_STREAM, "stream_down"):  # so that silence is not taken for an empty street
-        send({"status": "offline", "mode": mode, "service": hub.link.connected, "reason": state})
+        send({"status": "offline", "mode": mode, "service": hub.link.connected, "view": "steady", "reason": state})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

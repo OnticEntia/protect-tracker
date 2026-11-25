@@ -113,7 +113,7 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         with patch("custom_components.protect_tracker.camera_of", return_value="cam1"):
             await client.send_json({"id": 2, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere"})
             assert (await client.receive_json())["success"]
-        assert (await client.receive_json())["event"] == {"status": "connected", "mode": "auto", "service": True}
+        assert (await client.receive_json())["event"] == {"status": "connected", "mode": "auto", "service": True, "view": "steady"}
         send({**WALKING, "clockWall": 1000.0, "clockStream": 500.0, "clockStreamRate": 1000})
         theirs = (await client.receive_json())["event"]
         assert theirs["clockWall"] == 1000.0 and theirs["clockStream"] == 500.0  # as Protect sent it
@@ -122,7 +122,7 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         ours = {"source": "local", "clockWall": 1100.0, "clockStream": 400.0, "clockStreamRate": 1000,
                 "tracks": [{"id": "2", "coord": [5, 6, 7, 8], "objectType": "person", "local": True}]}
         await service.ws.send_json({"type": "tracks", "camera": "cam1", "packet": ours})
-        assert (await client.receive_json())["event"] == {**ours, "mode": "auto"}
+        assert (await client.receive_json())["event"] == {**ours, "mode": "auto", "view": "steady"}  # (said for a service too old to say it)
         # one box a track: while the service's is fresh, Protect's for that id is held back (others pass)
         send({**WALKING, "tracks": WALKING["tracks"] + PARKED["tracks"]})
         both = (await client.receive_json())["event"]
@@ -131,19 +131,19 @@ async def test_wakes_the_service_and_passes_reports_on(hass, socket_enabled, unu
         send(WALKING)
         assert [tr["id"] for tr in (await client.receive_json())["event"]["tracks"]] == ["2"]
         send({"status": "disconnected"})
-        assert (await client.receive_json())["event"] == {"status": "disconnected"}
+        assert (await client.receive_json())["event"] == {"status": "disconnected", "view": "steady"}
 
         # on the service's own word: its own stream, nothing of Protect's passed on
         with patch("custom_components.protect_tracker.camera_of", return_value="cam1"):
             await client.send_json({"id": 7, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere", "mode": "local"})
             assert (await client.receive_json())["success"]
-        assert (await client.receive_json())["event"] == {"status": "connected", "mode": "local", "service": True}
+        assert (await client.receive_json())["event"] == {"status": "connected", "mode": "local", "service": True, "view": "steady"}
         recorded = []
         relay.record_live = lambda camera, packet: recorded.append((camera, packet["tracks"][0]["id"]))
         mine = {"source": "local", "mode": "local", "clockWall": 1200.0, "clockStream": 600.0, "clockStreamRate": 1000,
                 "tracks": [{"id": "Lx-1", "coord": [1, 2, 3, 4], "objectType": "person", "local": True, "confirmed": False}]}
         await service.ws.send_json({"type": "tracks", "camera": "cam1", "mode": "local", "packet": mine})
-        assert (await client.receive_json())["event"] == mine
+        assert (await client.receive_json())["event"] == {**mine, "view": "steady"}
         send(WALKING)  # Protect's report goes to the default stream's listener only
         got = await client.receive_json()
         assert got["id"] == 2 and got["event"]["source"] == "local" and got["event"]["tracks"][0]["local"] is False
@@ -379,7 +379,7 @@ async def test_a_camera_that_goes_offline_is_left_alone_until_it_is_back(hass, s
         cam.state = "DISCONNECTED"  # unplugged
         await it.check()
         assert (await it.service.wait_for("sleep"))[0]["camera"] == "cam1"  # the service is told to stop
-        assert (await client.receive_json())["event"] == {"status": "offline", "mode": "local", "service": True, "reason": "offline"}
+        assert (await client.receive_json())["event"] == {"status": "offline", "mode": "local", "service": True, "view": "steady", "reason": "offline"}
         assert it.hub.status()["states"] == {"cam1": "offline"} and it.hub.watching == {}
         assert hass.states.get(it.sensor()).state == "unavailable"
         assert "cam1" not in it.relay.listeners  # nor is Protect asked for its reports meanwhile
@@ -390,7 +390,7 @@ async def test_a_camera_that_goes_offline_is_left_alone_until_it_is_back(hass, s
         await client.send_json({"id": 2, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere"})
         assert (await client.receive_json())["success"]
         assert (await client.receive_json())["event"]["status"] == "connected"
-        assert (await client.receive_json())["event"] == {"status": "offline", "mode": "auto", "service": True, "reason": "offline"}
+        assert (await client.receive_json())["event"] == {"status": "offline", "mode": "auto", "service": True, "view": "steady", "reason": "offline"}
 
         cam.state = "CONNECTED"  # and it resumes by itself
         await it.check()
@@ -514,7 +514,7 @@ async def test_a_stream_the_service_cannot_read_is_said(hass, socket_enabled, un
         assert (await client.receive_json())["success"]
         assert (await client.receive_json())["event"]["status"] == "connected"
         await it.service.ws.send_json({"type": "status", "cameras": {"cam1": {"stream": "down", "error": "couldn't connect"}}})
-        assert (await client.receive_json())["event"] == {"status": "offline", "mode": "local", "service": True, "reason": "stream_down"}
+        assert (await client.receive_json())["event"] == {"status": "offline", "mode": "local", "service": True, "view": "steady", "reason": "stream_down"}
         assert it.hub.status()["states"] == {"cam1": "stream_down"}
         assert hass.states.get(it.sensor()).state == "unavailable"
         assert not [m for m in it.service.got if m["type"] == "sleep"]  # the service goes on trying: it is still a camera
@@ -554,7 +554,7 @@ async def test_the_view_moving_is_on_every_packet_and_said_at_once(hass, socket_
         client = await hass_ws_client(hass)
         await client.send_json({"id": 1, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere"})
         assert (await client.receive_json())["success"]
-        assert (await client.receive_json())["event"]["status"] == "connected"
+        assert (await client.receive_json())["event"]["view"] == "steady"  # from the very first message
         it.relay.listeners["cam1"](WALKING)
         assert (await client.receive_json())["event"]["view"] == "steady"  # Protect's own packet, passed on: said there too
 
@@ -569,3 +569,34 @@ async def test_the_view_moving_is_on_every_packet_and_said_at_once(hass, socket_
         assert (await client.receive_json())["event"] == {"status": "view", "view": "steady", "mode": "auto", "service": True}
         it.relay.listeners["cam1"](WALKING)
         assert (await client.receive_json())["event"]["view"] == "steady"
+
+
+async def test_one_sensor_that_cannot_be_made_does_not_take_the_others_down(hass, socket_enabled, unused_tcp_port, caplog):
+    from custom_components.protect_tracker import binary_sensor
+
+    real = binary_sensor.device_info
+
+    def broken_for_one(mac, theirs):
+        if mac.endswith("22"):
+            raise TypeError("something about this one's device")
+        return real(mac, theirs)
+
+    with patch("custom_components.protect_tracker.binary_sensor.device_info", side_effect=broken_for_one):
+        async with Going(hass, unused_tcp_port, Protect(Cam(), Cam("cam2", "AA:BB:CC:00:11:33"))) as it:
+            await it.check(5)
+            sensors = [e for e in hass.states.async_entity_ids("binary_sensor") if "person_seen" in e]
+            assert len(sensors) == 1 and hass.states.get(sensors[0]).state == "off"  # the other camera has its sensor
+            assert it.entry.state.value == "loaded"
+            assert len([r for r in caplog.records if "could not be made" in r.getMessage()]) == 1  # said once, not at every check
+
+
+async def test_the_sensors_device_carries_the_cameras_name(hass, socket_enabled, unused_tcp_port):
+    from homeassistant.helpers import device_registry as dr
+
+    from custom_components.protect_tracker.binary_sensor import device_info
+
+    theirs = device_of(hass)
+    info = device_info("AA:BB:CC:00:11:22", theirs)
+    assert info["name"] == "Somewhere" and info["connections"] == {(dr.CONNECTION_NETWORK_MAC, "aa:bb:cc:00:11:22")}
+    assert "manufacturer" not in info  # what the camera's device does not say is left out, not set to nothing
+    assert "name" not in device_info("AA:BB:CC:00:11:22", None)

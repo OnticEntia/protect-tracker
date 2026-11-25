@@ -382,7 +382,7 @@ connected; Auto: Protect's reports are not coming). An integration too old to kn
 | `mode` | `"local"` or `"auto"` |
 | `source` | Auto: how the camera is being served just then, and it stays put: `"local"` while the service is watching it, `"protect"` while it is not. Local: always `"local"`. |
 | `fps`, `fpsFloor`, `fpsOk` | Frames looked at a second, the floor, and whether it is being held (on the service's packets). |
-| `view` | `"moving"` while the camera's whole view is moving (it pans, tilts or zooms), else `"steady"`. On every packet, Protect's own passed on in Auto included. A change is also sent at once on its own: `{"status": "view", "view": "moving" \| "steady"}`. See [A view that moves](#a-view-that-moves-pan-tilt-zoom). |
+| `view` | `"moving"` while the camera's whole view is moving (it pans, tilts or zooms), else `"steady"`. On every message: the service's packets, Protect's own passed on in Auto, and status messages. A change is also sent at once on its own: `{"status": "view", "view": "moving" \| "steady"}`. See [A view that moves](#a-view-that-moves-pan-tilt-zoom). |
 
 ### On every track
 

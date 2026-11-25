@@ -21,6 +21,7 @@ sensor along first).
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
@@ -34,15 +35,25 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import TrackerHub
 from .const import DOMAIN
 
+_LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     hub: TrackerHub = hass.data[DOMAIN]
     made: set[str] = set()
+    failed: set[str] = set()  # (said once each, not at every check)
 
     @callback
     def add(camera: str) -> None:
-        if camera in made:
+        if camera in made or camera in failed:
             return
+        try:
+            _add(camera)
+        except Exception:  # noqa: BLE001 - one camera's sensor failing is no reason for the others to go without
+            failed.add(camera)
+            _LOGGER.exception("A camera's \"Person seen\" sensor could not be made")
+
+    def _add(camera: str) -> None:
         mac = hub.macs.get(camera)
         # (the sensor belongs on the camera's own device, which the UniFi Protect integration makes: a camera
         # just adopted may not have it yet, and a device made here would have no name to call the sensor by)
@@ -59,6 +70,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entry.async_on_unload(lambda: setattr(hub, "add_sensor", None))
     for camera in list(hub.roster.cameras):
         add(camera)
+
+
+def device_info(mac: str, theirs: dr.DeviceEntry | None) -> DeviceInfo:
+    """The camera's device as this integration names it, made in one go (what
+    a device info is has changed between Home Assistant versions; being made
+    with its fields is the one thing that holds in all of them)."""
+    fields: dict[str, Any] = {"connections": {(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))}}
+    if theirs is not None and theirs.name:
+        fields["name"] = theirs.name
+        for key in ("manufacturer", "model"):
+            if getattr(theirs, key, None):
+                fields[key] = getattr(theirs, key)
+    return DeviceInfo(**fields)
 
 
 def _their_device(hass: HomeAssistant, mac: str) -> dr.DeviceEntry | None:
@@ -85,9 +109,7 @@ class PersonSeen(BinarySensorEntity):
         self._attr_unique_id = f"{mac.replace(':', '').upper()}_person_seen"
         # The camera, by its hardware address. Where Home Assistant keeps a device per integration, this is a
         # device of this integration's own beside the UniFi Protect one, so it is given the camera's name.
-        self._attr_device_info = DeviceInfo(connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(mac))})
-        if theirs is not None and theirs.name:
-            self._attr_device_info.update(name=theirs.name, manufacturer=theirs.manufacturer, model=theirs.model)
+        self._attr_device_info = device_info(mac, theirs)
 
     @property
     def is_on(self) -> bool:
