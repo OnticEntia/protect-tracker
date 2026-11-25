@@ -75,10 +75,13 @@ def replay(looks, old: bool = False) -> dict[str, Any]:
         faces: dict[str, int] = {}
         seen: list[tuple[float, list]] = []  # per frame: the people the detector found
         frames = most = 0
-        for ms, found in looks:
+        moving = 0
+        for ms, found, *more in looks:
             frames += 1
+            view = more[0] if more else "steady"  # (is the whole view moving in this frame: view.py)
+            moving += view == "moving"
             seen.append((ms, [b[:4] for b in found.get("person", [])]))
-            follow.frame(int(ms * 90) % (1 << 32), found, ms)
+            follow.frame(int(ms * 90) % (1 << 32), found, ms, view)
             for packet in follow.local_packets:
                 people = [t for t in packet["tracks"] if t["objectType"] == "person"]
                 most = max(most, len(people))
@@ -89,6 +92,7 @@ def replay(looks, old: bool = False) -> dict[str, Any]:
                     row = told.setdefault(t["id"], {"id": t["id"], "first": ms, "first_box": _box(t["coord"]), "frames": 0})
                     row["last"], row["last_box"], row["frames"] = ms, _box(t["coord"]), row["frames"] + 1
         face_stats = follow.local.faces.stats()
+        view_stats = {**follow.stats["view"], "frames_moving": moving}
     rows = sorted(told.values(), key=lambda r: r["first"])
     breaks = []
     for i, row in enumerate(rows[1:], 1):
@@ -125,6 +129,7 @@ def replay(looks, old: bool = False) -> dict[str, Any]:
         "face_tracks": len(faces),
         "face_frames": sum(faces.values()),
         "face_boxes": face_stats,
+        "view": view_stats,
     }
 
 
@@ -179,10 +184,15 @@ async def fetch(url: str, token: str, camera: str | None, start: datetime, end: 
 
 
 def looks_of(recording: bytes, engine, sharp: bool = True, every: int = 1, size: tuple[int, int] | None = (1280, 720)):
-    """The recording decoded in memory, each frame looked at: (ms, found).
-    `size`: the picture is first made the size of the stream the live
-    service watches, so faces are looked for in what it would have had."""
+    """The recording decoded in memory, each frame looked at: (ms, found,
+    is the view moving). `size`: the picture is first made the size of the
+    stream the live service watches, so faces are looked for in what it
+    would have had."""
     import av  # noqa: PLC0415
+
+    from tracker_service.view import H, W, ViewMotion  # noqa: PLC0415
+
+    view = ViewMotion()
 
     with av.open(io.BytesIO(recording)) as container:
         stream = container.streams.video[0]
@@ -192,7 +202,9 @@ def looks_of(recording: bytes, engine, sharp: bool = True, every: int = 1, size:
             ms = float(frame.pts * stream.time_base) * 1000.0
             if size and (frame.width, frame.height) != size:
                 frame = frame.reformat(width=size[0], height=size[1])
-            yield ms, engine.look(frame, far=sharp, faces=True)
+            if view.due(ms):
+                view.frame(ms, frame.to_ndarray(format="gray", width=W, height=H))
+            yield ms, engine.look(frame, far=sharp, faces=True), view.state
 
 
 def when(text: str) -> datetime:
@@ -209,6 +221,9 @@ def say(result: dict[str, Any], label: str) -> None:
     if f["found"]:
         print(f"   face boxes: {f['found']} from a find in that frame, {f['carried']} carried along with the person; at a find the carried box was "
               f"{f['carried_off']} of a face's width off, one left where it was last found would have been {f['held_off']} ({f['compared']} compared)")
+    v = result.get("view") or {}
+    if v.get("moves"):
+        print(f"   the view moved {v['moves']} time(s), {v['frames_moving']} frames in all: {v['held']} people held through it, {v['kept']} still followed after, {v['dropped']} other tracks dropped")
     for t in result["tracks"]:
         print(f"   {t['id']:>8}  {clock(t['from'])} to {clock(t['to'])}  ({t['seconds']} s, {t['frames']} frames)")
     for b in result["breaks"]:

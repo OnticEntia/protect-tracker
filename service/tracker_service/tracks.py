@@ -222,9 +222,20 @@ class LocalTracker:
                     best, most = place, overlap
         return best
 
-    def update(self, when: float, found: dict[str, list]) -> list[Track]:
+    def afresh(self, keep: set[int] | None = None) -> list[int]:
+        """The view has moved: every place remembered is somewhere else now,
+        and so is everything followed. All of it is dropped, but for the
+        tracks in `keep`. Returns the ids of the tracks dropped."""
+        self.places = []
+        gone = [tid for tid in self.tracks if not keep or tid not in keep]
+        for tid in gone:
+            del self.tracks[tid]
+        return gone
+
+    def update(self, when: float, found: dict[str, list], settle: bool = True) -> list[Track]:
         """Take in a frame's boxes ({kind: [(x1, y1, x2, y2, score)]}).
-        Returns the tracks found in this frame."""
+        Returns the tracks found in this frame. `settle`: note where things
+        have come to stand (not while the view itself is moving)."""
         seen_now: list[Track] = []
         self.places = [p for p in self.places if when - p["seen"] <= PLACE_KEEP_MS]
         for kind, boxes in found.items():
@@ -271,7 +282,7 @@ class LocalTracker:
                     self.tracks[self._next] = track
                     self._next += 1
                     seen_now.append(track)
-        for t in seen_now:  # what has stood in one place for a while leaves that place on the list
+        for t in seen_now if settle else []:  # what has stood in one place for a while leaves that place on the list
             if t.kind in STANDING_KINDS and when - t.born >= SETTLED_MS and not t.moving(SETTLED_MS):
                 self.stands(t.kind, t.box, when, t.id)
         self.ended = [t for t in self.tracks.values() if when - t.seen > _gone_after(t)]

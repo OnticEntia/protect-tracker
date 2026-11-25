@@ -545,3 +545,27 @@ async def test_the_options_form_has_no_camera_in_it_to_go_missing(hass, socket_e
         await it.check(6)
         result = await hass.config_entries.options.async_init(it.entry.entry_id)
         assert result["type"] == "form" and set(result["data_schema"].schema) == {"url", "stream", "always"}
+
+
+async def test_the_view_moving_is_on_every_packet_and_said_at_once(hass, socket_enabled, unused_tcp_port, hass_ws_client):
+    async with Going(hass, unused_tcp_port, Protect(Cam())) as it:
+        await it.check()
+        await it.service.wait_for("watch")
+        client = await hass_ws_client(hass)
+        await client.send_json({"id": 1, "type": "protect_tracker/live/subscribe", "entity": "camera.somewhere"})
+        assert (await client.receive_json())["success"]
+        assert (await client.receive_json())["event"]["status"] == "connected"
+        it.relay.listeners["cam1"](WALKING)
+        assert (await client.receive_json())["event"]["view"] == "steady"  # Protect's own packet, passed on: said there too
+
+        beat = {"source": "local", "mode": "local", "clockWall": 1.0, "clockStream": 1.0, "tracks": [], "view": "moving"}
+        await it.service.ws.send_json({"type": "tracks", "camera": "cam1", "mode": "local", "packet": beat})
+        assert (await client.receive_json())["event"] == {"status": "view", "view": "moving", "mode": "auto", "service": True}
+        it.relay.listeners["cam1"](WALKING)
+        assert (await client.receive_json())["event"]["view"] == "moving"
+        assert it.hub.status()["view"] == {"cam1": "moving"}
+
+        await it.service.ws.send_json({"type": "status", "cameras": {"cam1": {"stream": "open", "view": {"state": "steady"}}}})
+        assert (await client.receive_json())["event"] == {"status": "view", "view": "steady", "mode": "auto", "service": True}
+        it.relay.listeners["cam1"](WALKING)
+        assert (await client.receive_json())["event"]["view"] == "steady"

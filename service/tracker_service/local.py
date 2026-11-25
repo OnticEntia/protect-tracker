@@ -181,8 +181,20 @@ class LocalView:
             and self.standing(track.kind, track.box) is None
         )
 
-    def frame(self, when: float, tracks: dict[int, Track], seen: list[Track], ended: list[Track]) -> list[dict[str, Any]]:
-        """The entries to tell for this frame."""
+    def afresh(self, gone: list[int]) -> None:
+        """These tracks were dropped because the view moved: nothing is kept of them."""
+        for tid in gone:
+            told = self.tracks.pop(tid, None)
+            if told is not None:
+                self.faces.forget(told.name)
+
+    def frame(self, when: float, tracks: dict[int, Track], seen: list[Track], ended: list[Track], hold: str | None = None,
+              held: set[int] | None = None) -> list[dict[str, Any]]:
+        """The entries to tell for this frame. `hold`: "new" while the view
+        may be starting to move (nothing is newly told); "all" while it is
+        moving (nothing is newly told, and of what was told only the people
+        in `held`, where they are found: everything else in the picture is
+        moving because the picture is)."""
         for t in ended:
             gone = self.tracks.pop(t.id, None)
             if gone is not None:
@@ -194,6 +206,8 @@ class LocalView:
             if t.kind == "face":
                 continue
             told = self._of(t)
+            if hold == "all" and not (told.told and t.id in (held or ()) and t.id in seen_ids):
+                continue
             if t.id in seen_ids:
                 told.best = max(told.best, float(t.score))
                 box = t.box
@@ -202,6 +216,8 @@ class LocalView:
             else:
                 continue
             if not told.told:
+                if hold:
+                    continue
                 if t.kind == "person" and t.id in seen_ids and t.stood(FIXTURE_MS):
                     self.stands("person", t.box, when, t.id)  # never told, and has not stirred: remembered as a fixture
                 if not self.sure(t, told):
@@ -211,6 +227,8 @@ class LocalView:
                 self.stats["people"] += t.kind == "person"
                 if told.protect is not None:
                     self.stats["confirmed"] += 1
+            elif hold == "all":
+                pass  # a person held through the move: told where they are found
             elif t.kind != "person" and not t.moving() and self.standing(t.kind, t.box) is not None:
                 continue  # it has come to rest where things stand: nothing to follow until it moves again
             elif t.kind != "person" and box[3] - box[1] < GONE_SMALL * SURE[t.kind][1]:

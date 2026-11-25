@@ -28,7 +28,7 @@ this project has no card of its own.
 - [Two ways of working: Local and Auto](#two-ways-of-working-local-and-auto)
 - [What is told, and when](#what-is-told-and-when) · [One person, one track](#one-person-one-track) · [Faces](#faces)
 - [Frame rate](#frame-rate) · [What it costs](#what-it-costs) · [Models](#models)
-- [Entities](#entities) · [Cameras that come and go](#cameras-that-come-and-go) · [For cards: the live command](#for-cards-protect_trackerlivesubscribe)
+- [Entities](#entities) · [Cameras that come and go](#cameras-that-come-and-go) · [A view that moves](#a-view-that-moves-pan-tilt-zoom) · [For cards: the live command](#for-cards-protect_trackerlivesubscribe)
 - [No footage is stored](#no-footage-is-stored) · [Looking into it](#looking-into-it) · [Development](#development)
 
 ## The parts
@@ -296,9 +296,55 @@ and dropped with it, so a camera leaving or joining changes nothing in another's
 sharing the card really costs. The frames a stream sends at once when it is opened again are caught up
 with and not counted as falling behind, and a camera sending nothing is not called "below the floor".
 
-Not handled here: a PTZ camera turned to another view is still the same camera, connected and
-streaming, so none of the above applies to it; what the tracker should make of a changed view (things
-remembered as parked, fixtures) is separate work and is not built yet.
+A camera that pans, tilts or zooms is still the same camera, connected and streaming, so none of the
+above applies to it. What is done about its view moving is the next section.
+
+## A view that moves (pan, tilt, zoom)
+
+When a camera turns, everything in its picture moves at once: every parked car "travels" and every
+remembered place is somewhere else. Protect does not tell Home Assistant when a camera is moving or
+where it points, so the service reads it off the picture.
+
+**How it is told.** A few times a second the picture is made very small (160 × 90, grey), reduced to
+its edges, cut into 60 blocks, and each block is compared with the same block a third of a second, a
+second and a half and four seconds earlier. A thing moving through a steady view changes the blocks
+it passes over and no others, however big it is; a view that moves changes nearly all of them. The
+blocks round the border are counted on their own, so zooming (which leaves the middle where it is) is
+seen too; edges lying flat and edges standing upright are judged apart, so a sideways turn along a
+kerb is seen as well. A change of light or exposure is not a change of view. Blocks that keep changing
+in a steady view (leaves, a flag, rain in the lamps) are learnt and left out.
+
+**What is done.**
+
+| | |
+|---|---|
+| The first comparison that says so | Not yet believed, and not said; but nothing new is told from that moment. |
+| A second in a row (about 0.2–0.3 s after an ordinary turn begins, at once after a jump to a preset) | The view is **moving**: `view: "moving"` on every packet. Nothing new is told, in Local or in Protect's name. Everything told that is not a person ends. Nothing is remembered as standing anywhere. |
+| A person already being followed | **Held**: they keep their track id and their box for as long as the detector finds them in each frame (the box is on them in the moving picture). If they are not found for half a second (the camera jumped away from them) they are let go at once; no box is drawn where they used to be. |
+| The view at rest for half a second (under a second after an ordinary turn stops; up to four or five after one so slow that only the slowest comparison saw it) | `view: "steady"`. Following **starts afresh**: remembered parked places and fixtures are dropped, every track is dropped except people held through the move, and things are told again by the ordinary rules. Someone first seen during the move is told now. |
+
+**What it costs.** One comparison takes about 0.4 ms on the medium stream (0.06 ms to make the small
+picture, the rest to compare), ten times a second: some 4 ms of one processor core a second for each
+camera, on the camera's own thread and off the graphics card. It takes nothing from the frame-rate
+floor. The status has the measured time per camera (`view.check_ms`).
+
+**What it cannot do.**
+
+- A thing that fills nearly the whole picture as it passes (a bus right in front of the lens) looks
+  like the view moving while it does. A lorry filling well over half the picture does not.
+- If every block changes for half a minute on end, all of them are learnt as restless and the view
+  counts as steady again; so a turn that lasts longer than that is told as steady while it still
+  turns, and heavy snow in the lamps cannot silence the tracker for ever.
+- In a picture with almost nothing in it (darkness, fog, a blank wall) nothing can be told; that is
+  counted (`view.blind`) and taken as steady.
+- It knows the view moved, not where to. Each new view is learnt from nothing. Remembering what stands
+  where for each preset, so that a camera on patrol comes back to a view it already knows, is a later
+  step: it would need the view recognised again from the picture or from Protect's patrol state, and
+  a memory kept per view.
+
+It is tested on made-up pictures (a scene looked at through a window that pans, tilts, jumps and
+zooms) and, for the steady side, was run over recordings of a steady view by day and by night with no
+false alarm. `tools.replay` runs the same check on any recording, so a real pan can be replayed.
 
 ## For cards: `protect_tracker/live/subscribe`
 
@@ -331,6 +377,7 @@ connected; Auto: Protect's reports are not coming). An integration too old to kn
 | `mode` | `"local"` or `"auto"` |
 | `source` | Auto: how the camera is being served just then, and it stays put: `"local"` while the service is watching it, `"protect"` while it is not. Local: always `"local"`. |
 | `fps`, `fpsFloor`, `fpsOk` | Frames looked at a second, the floor, and whether it is being held (on the service's packets). |
+| `view` | `"moving"` while the camera's whole view is moving (it pans, tilts or zooms), else `"steady"`. On every packet, Protect's own passed on in Auto included. A change is also sent at once on its own: `{"status": "view", "view": "moving" \| "steady"}`. See [A view that moves](#a-view-that-moves-pan-tilt-zoom). |
 
 ### On every track
 
@@ -373,7 +420,8 @@ person being followed, where the service finds one and Protect reports none, is 
 
 Is the service reached, which cameras there are (`cameras`) and how each stands (`states`: `watching`,
 `asleep`, `offline`, `stream_down` or `no_stream`), what is watched, and per watched camera: how its
-stream is (`stream`: `open`, `opening` or `down`, with `error`, `down_s` and `retry_s`), the frame rate against the floor and what was
+stream is (`stream`: `open`, `opening` or `down`, with `error`, `down_s` and `retry_s`), whether its
+view is moving and how often it has (`view`), the frame rate against the floor and what was
 left out, look times, how many of Protect's moving tracks are followed and why bindings were let go, a
 picture check (how much movement the service's boxes hold against Protect's), how far ahead of
 Protect's first report the service had each thing, and how many face boxes were found or carried.

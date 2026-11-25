@@ -52,6 +52,11 @@ out of Protect is forgotten: the service is told to stop for good, listeners
 are sent {"status": "removed", "error": {...}} and their subscriptions are
 ended, and its sensor is removed. One that is adopted is taken up without a
 restart.
+
+Every packet with boxes says whether the camera's whole view is moving
+(`view`: "moving" | "steady"; a camera that pans, tilts or zooms, told by the
+service from the picture). A change is also said at once, on its own:
+{"status": "view", "view": ...}.
 """
 
 from __future__ import annotations
@@ -186,6 +191,7 @@ class TrackerHub:
         self.roster = Roster()  # which cameras there are, and how each stands
         self.macs: dict[str, str] = {}  # camera -> its hardware address (what its device is known by)
         self.stream_down: set[str] = set()  # watched, but the service has had no video of it for a while
+        self.view: dict[str, str] = {}  # camera -> "moving" while the service finds its whole view moving (a camera that turns)
         self.add_sensor: Callable[[str], None] | None = None  # (binary_sensor.py) makes a camera's sensor
         self.gone_listeners: dict[str, set[Callable[[], None]]] = {}  # camera -> told when it is removed for good
         self._ends: dict[Send, Callable[[], None]] = {}  # a listener -> what ends its subscription
@@ -269,6 +275,7 @@ class TrackerHub:
         self.waker.forget(camera)
         self._fresh.pop(camera, None)
         self.stream_down.discard(camera)
+        self.view.pop(camera, None)
         self.seen.pop(camera, None)
         self.watching.pop(camera, None)
         self.link.send({"type": "sleep", "camera": camera})  # (whether or not it was watched: the service may know better)
@@ -293,6 +300,15 @@ class TrackerHub:
             gone()
         self.seen_listeners.pop(camera, None)
         self.macs.pop(camera, None)
+
+    def _view(self, camera: str, view: Any) -> None:
+        """What the service says of a camera's view: kept (it goes on every
+        packet of Protect's passed on), and a change is said at once."""
+        view = "moving" if view == "moving" else "steady"
+        if self.view.get(camera, "steady") != view:
+            self.view[camera] = view
+            for mode in ("auto", "local"):
+                self._tell(camera, {"status": "view", "view": view, "mode": mode, "service": self.link.connected}, mode)
 
     def _say(self, camera: str, status: str, reason: str | None = None) -> None:
         """Tell whoever listens to a camera how it stands."""
@@ -409,6 +425,7 @@ class TrackerHub:
         self._fresh.clear()
         self.watching.clear()
         self.stream_down.clear()
+        self.view.clear()
         for camera, mode in list(self.listeners):
             if mode == "local":  # the service is back
                 self._tell(camera, {"status": "connected", "mode": "local", "service": True}, "local")  # a service just (re)connected watches nothing yet: _check sees to it
@@ -430,6 +447,9 @@ class TrackerHub:
                     self._say(camera, "online")
             for camera in down ^ was:
                 self._seen_changed(camera)
+            for camera, info in held.items():  # (the view, too, is said here now and then, should no packet have said it)
+                if camera in self.watching and isinstance(info, dict) and isinstance(info.get("view"), dict):
+                    self._view(camera, info["view"].get("state"))
             for camera in held:  # held by the service, but not by us (it went while we were not looking): let go
                 if camera not in self.watching and camera not in self._waking:
                     self.link.send({"type": "sleep", "camera": camera})
@@ -437,6 +457,7 @@ class TrackerHub:
             camera, now = str(message.get("camera")), time.monotonic()
             if camera not in self.watching:
                 return  # of a camera let go meanwhile: nothing of it is passed on or kept
+            self._view(camera, message["packet"].get("view"))
             if message.get("mode") == "local":  # on the service's own word
                 self._tell(camera, message["packet"], "local")
                 if message["packet"].get("tracks"):
@@ -467,7 +488,7 @@ class TrackerHub:
             if isinstance(tr, dict) and now - fresh.get(str(tr.get("id")), -1e9) > HOLD_S
         ]
         served = self.link.connected and camera in self.watching
-        return {**payload, "tracks": tracks, "source": "local" if served else "protect", "mode": "auto"}
+        return {**payload, "tracks": tracks, "source": "local" if served else "protect", "mode": "auto", "view": self.view.get(camera, "steady")}
 
     # --------------------------------------------------------- the cards
 
@@ -518,6 +539,7 @@ class TrackerHub:
             "reports": self._relay is not None and bool(self._unsubs),
             "cameras": sorted(self.roster.cameras),
             "states": {cam: self.state(cam) for cam in sorted(self.roster.cameras)},
+            "view": {cam: self.view.get(cam, "steady") for cam in sorted(self.watching)},
             "watching": {cam: {k: info[k] for k in ("entity", "channel", "since")} for cam, info in self.watching.items()},
             "listeners": {f"{cam} {mode}": len(sends) for (cam, mode), sends in self.listeners.items()},
             "seen": {cam: {k: v for k, v in info.items() if k != "at"} for cam, info in self.seen.items()},

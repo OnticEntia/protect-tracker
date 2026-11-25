@@ -90,11 +90,14 @@ def test_boxes_for_every_frame_under_protects_id():
     cam = state["cameras"]["c1"]
     assert cam["codec"] == "h265" and cam["bound"] == 1 and cam["frames"] >= 20
     assert "KEY" not in json.dumps(state) and "rtsp" not in json.dumps(state)
+    assert cam["view"]["state"] == "steady" and cam["view"]["checks"] >= 2 and cam["view"]["check_ms"] < 5
+    assert all(m["packet"]["view"] == "steady" for m in local)
     frames = {}
     for message in got:
         assert message["camera"] == "c1"
         packet = message["packet"]
         assert packet["fpsFloor"] == 20 and packet["fpsOk"] is True and "fps" in packet  # how it is being kept up with
+        assert packet["view"] == "steady"  # and whether the whole view is moving: on every packet
         (tr,) = packet["tracks"]
         assert tr["id"] == "T7" and tr["objectType"] == "person" and tr["zones"] == [2] and tr["local"] and packet["eventId"] == "e9"
         i = (packet["clockWall"] - 125 - wall0) * 30 / 1000  # which frame this box says it is of (stamped as Protect stamps)

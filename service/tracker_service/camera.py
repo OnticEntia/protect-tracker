@@ -26,6 +26,7 @@ from .pace import MIN_FPS, Pace
 from .rtp import Depacketizer
 from .rtsp import RtspError, RtspReader, VideoTrack
 from .video import Decoder, picture
+from .view import H as VIEW_H, MOVING, W as VIEW_W, ViewMotion
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +95,8 @@ class CameraWorker(threading.Thread):
         self.follow = CameraFollow(stamp_ms, epoch=_base36(int(time.time())))
         self._reopened = False
         self.check = PictureCheck()
+        self.view = ViewMotion()  # is the whole view moving (a camera that turns or zooms)
+        self.view_ms: deque = deque(maxlen=300)  # what that check costs, each time it is made
         self.emit = emit
         self.items: queue.Queue = queue.Queue(maxsize=WAITING)
         self.decoder: Decoder | None = None
@@ -157,10 +160,16 @@ class CameraWorker(threading.Thread):
                     stats = self.follow.stats
                     self.follow = CameraFollow(self.stamp_ms, epoch=_base36(int(time.time())))
                     self.follow.stats.update({key: stats[key] for key in ("frames", "reports", "sent")})
+                    self.view = ViewMotion()
                     self.restarts += 1
             bench = getattr(self.engine, "bench", None)
             if bench is not None:
                 bench.offer(frame, self.follow.reported_moving() if bench.state == "collecting" else None)  # (bench.py)
+            # is the view itself moving? Asked a few times a second, of every frame that comes (looked at or not)
+            if self.view.due(rtp / 90.0):
+                started = time.perf_counter()
+                self.view.frame(rtp / 90.0, frame.to_ndarray(format="gray", width=VIEW_W, height=VIEW_H))
+                self.view_ms.append((time.perf_counter() - started) * 1000)
             now = time.monotonic()
             plan = self.pace.plan(max(0.0, time.time() - at / 1000.0), self.follow.busy(), now)
             self._pace_state = self.pace.state(now)
@@ -170,7 +179,7 @@ class CameraWorker(threading.Thread):
             found = self.engine.look(frame, plan["far"], plan["faces"])
             (self.far_ms if plan["far"] else self.look_ms).append((time.perf_counter() - started) * 1000)
             self.follow.last_frame = None
-            for packet in self.follow.frame(rtp, found, at):
+            for packet in self.follow.frame(rtp, found, at, self.view.state):
                 self.emit(self._rated(packet), "auto")  # in Protect's name: what Protect reported, refined
             for packet in self.follow.local_packets:
                 self.emit(self._rated(packet), "local")  # on our own word
@@ -183,6 +192,7 @@ class CameraWorker(threading.Thread):
         at a second, the floor, and whether that floor is being held."""
         pace = self._pace_state
         packet["fps"], packet["fpsFloor"], packet["fpsOk"] = pace["fps"], pace["floor"], not pace["below"]
+        packet["view"] = "moving" if self.view.state == MOVING else "steady"
         return packet
 
     def state(self) -> dict[str, Any]:
@@ -194,6 +204,8 @@ class CameraWorker(threading.Thread):
             "lost": self.lost, "restarts": self.restarts, **self.follow.stats,
             "check": self.check.result(), "head_start": self.follow.head_start(), "local": dict(self.follow.local.stats),
             "face_boxes": self.follow.local.faces.stats(),
+            "view": {"state": "moving" if self.view.state == MOVING else "steady", **self.view.stats, "moving_ms": round(self.view.stats["moving_ms"]),
+                     "check_ms": round(sorted(self.view_ms)[len(self.view_ms) // 2], 2) if self.view_ms else None},
         }
 
 

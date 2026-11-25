@@ -64,6 +64,7 @@ BUSY_MS = 2000  # something moved this recently: every frame is looked at
 META = ("objectType", "confidence", "zones", "loiterZones", "lines", "desc")
 BEAT_MS = 1000  # with nothing to tell, the local stream still says so this often (so quiet is told from dead)
 SLEW = 0.1  # the local stream's wall clock is brought to Protect's at this share of real time (never a jump, never backwards)
+HELD_LOST_MS = 500  # a person held while the view moves, not found for this long, is let go (they are not where they were)
 SEEN_MS, SEEN_MOVE = 1000, 0.05  # a local person counts as seen when followed this long and this far (share of the picture)
 
 
@@ -125,7 +126,7 @@ class CameraFollow:
         self.clock = FeedClock()
         self.theirs: dict[str, _Theirs] = {}
         self.event: dict[str, Any] = {}
-        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "left": 0, "far": 0, "lost": 0, "disagreed": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
+        self.stats = {"frames": 0, "reports": 0, "bound": 0, "dropped": 0, "let_go": {"parked": 0, "left": 0, "far": 0, "lost": 0, "disagreed": 0, "view": 0}, "sent": 0, "faces": 0, "people_never_reported": 0,
                       "theirs_moving": 0, "theirs_followed": 0}  # Protect's tracks seen on the move, and how many of them we followed
         self.shift: float | None = None  # Protect's wall clock minus our own clock
         self.last_frame: tuple[float, dict[str, tuple]] | None = None  # the newest frame's time, and our boxes sent for it
@@ -138,6 +139,9 @@ class CameraFollow:
         self._bound_ever: set[int] = set()
         self._busy = 0.0  # our clock: when something last moved
         self._frame_at: float | None = None  # when (wall clock, ms) the newest frame came
+        self.view_moving = False  # the whole view is moving (a camera that turns or zooms: view.py)
+        self.held: set[int] = set()  # the people told when it began to: followed through it, where they are found
+        self.stats["view"] = {"moves": 0, "held": 0, "kept": 0, "dropped": 0}
 
     # ----------------------------------------------------------- the clocks
 
@@ -156,6 +160,46 @@ class CameraFollow:
             return True
         step = (((rtp - self._rtp) + (1 << 31)) % (1 << 32) - (1 << 31)) / 90.0
         return abs(step - (now_ms - self._frame_at)) <= slack_ms
+
+    # ---------------------------------------------------- a view that moves
+
+    def _forget(self, gone: list[int]) -> None:
+        """Tracks dropped because the view moved: nothing of them is kept, and nothing is counted."""
+        self.local.afresh(gone)
+        for tid in gone:
+            self._born_at.pop(tid, None)
+            self._bound_ever.discard(tid)
+        for mine in self.theirs.values():
+            if mine.local in gone:
+                mine.local, mine.misses = None, 0
+
+    def _view_began(self) -> None:
+        """The view has begun to move. Everything in the picture now moves
+        with it, so nothing in it says anything any more: what stands is no
+        longer where it stood, and what "travels" is the camera. The people
+        already told are held on to (their boxes still sit on them, for as
+        long as they are found); everything else told ends here."""
+        self.view_moving = True
+        self.stats["view"]["moves"] += 1
+        self.held = {tid for tid, told in self.local.tracks.items() if told.told and tid in self.tracker.tracks and self.tracker.tracks[tid].kind == "person"}
+        self.stats["view"]["held"] += len(self.held)
+        self.tracker.places = []
+        for mine in self.theirs.values():  # in Protect's name too: only the people go on
+            if mine.local is not None and mine.kind != "person":
+                self._unbind(mine, "view")
+
+    def _view_settled(self, when: float) -> None:
+        """The view has come to rest somewhere else. Following starts
+        afresh: no remembered places or fixtures, no tracks but the people
+        held through the move who are still found."""
+        self.view_moving = False
+        keep = {tid for tid in self.held if tid in self.tracker.tracks}
+        gone = self.tracker.afresh(keep)
+        self._forget(gone)
+        self.stats["view"]["kept"] += len(keep)
+        self.stats["view"]["dropped"] += len(gone)
+        self.held = set()
+        self._busy = max(self._busy, when)  # worth a close look at once
 
     def _tie(self, now_ms: float) -> None:
         """Tie Protect's clock to ours, from the newest frame."""
@@ -234,6 +278,8 @@ class CameraFollow:
         pairs = []
         for tid, box in boxes.items():
             mine = self.theirs[tid]
+            if self.view_moving:
+                break  # nothing is taken up while the view moves
             if mine.local is not None or mine.kind is None or mine.stationary:
                 continue
             if box[3] - box[1] < FAR_HEIGHT and mine.kind != "face":
@@ -293,9 +339,10 @@ class CameraFollow:
 
     # -------------------------------------------------------------- frames
 
-    def frame(self, rtp: int, found: dict[str, list], now_ms: float) -> list[dict[str, Any]]:
+    def frame(self, rtp: int, found: dict[str, list], now_ms: float, view: str = "steady") -> list[dict[str, Any]]:
         """One frame's boxes ({kind: [(x1, y1, x2, y2, score)]}) and its RTP
-        timestamp. Returns the packet to send for it, if any."""
+        timestamp. Returns the packet to send for it, if any. `view`: is the
+        whole view moving ("steady" | "suspect" | "moving", from view.py)."""
         when = self._own(rtp, now_ms)
         self._rtp, self._frame_at = rtp, now_ms
         # Protect has stopped reporting (its feed dropped, or the thing has gone): what it last said of a
@@ -303,7 +350,17 @@ class CameraFollow:
         for tid in [tid for tid, t in self.theirs.items() if when - t.reported > END_MS * 4]:
             del self.theirs[tid]
         self.stats["frames"] += 1
-        seen_tracks = self.tracker.update(when, found)
+        if view == "moving" and not self.view_moving:
+            self._view_began()
+        elif view != "moving" and self.view_moving:
+            self._view_settled(when)
+        if self.view_moving:  # a person held who is no longer found is not where they were: let go, not carried on
+            lost = [tid for tid in self.held if tid not in self.tracker.tracks or when - self.tracker.tracks[tid].seen > HELD_LOST_MS]
+            for tid in lost:
+                self.held.discard(tid)
+                self.tracker.tracks.pop(tid, None)
+            self._forget(lost)
+        seen_tracks = self.tracker.update(when, found, settle=not self.view_moving)
         seen = {t.id for t in seen_tracks}
         for t in seen_tracks:
             if t.id not in self._born_at:
@@ -330,7 +387,8 @@ class CameraFollow:
         self.last_frame = (when, ours)
         if self.shift is None:
             self._tie(now_ms)
-        told = self.local.frame(when, self.tracker.tracks, seen_tracks, self.tracker.ended)
+        hold = "all" if self.view_moving else "new" if view != "steady" else None
+        told = self.local.frame(when, self.tracker.tracks, seen_tracks, self.tracker.ended, hold, self.held)
         self.local_packets = []
         # every packet is the whole of what is told just now; an empty one when the last thing has gone, and now and then
         if told or self._local_had or when - self._local_sent >= BEAT_MS:
@@ -349,6 +407,8 @@ class CameraFollow:
                 continue
             if when - mine.reported > END_MS:
                 continue  # Protect no longer reports it
+            if self.view_moving and local.id not in seen:
+                continue  # (no guessing where a thing is while the picture itself moves)
             if local.id in seen:
                 box = local.box
             elif when - local.seen <= COAST_MS:
