@@ -25,7 +25,7 @@ from .follow import CameraFollow
 from .pace import MIN_FPS, Pace
 from .rtp import Depacketizer
 from .rtsp import RtspError, RtspReader, VideoTrack
-from .video import Decoder, picture
+from .video import Decoder, picture, small_grey
 from .view import EVERY_MS as VIEW_EVERY_MS, H as VIEW_H, MOVING, W as VIEW_W, ViewMotion
 
 log = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ FAR_EVERY = 1  # one frame in this many gets the sharp look (the picture at twic
 FACES_AT_ONCE = 3  # the faces of this many people (the biggest in the picture) are looked for in a frame
 WIDE = "wide1280"  # the folder (in the models folder) of the detector's copy for that: a picture 1280 across
 SAID_AN_HOUR = 20  # moves of the view said in the log in an hour, at most
+BELOW_SAID = 10.0  # under the frame-rate floor for this long (seconds): said in the log
 WAITING = 600  # pictures and reports that may wait at most
 RETRY_FIRST, RETRY_MOST = 1.0, 60.0  # a stream that cannot be read is tried again after this long, then twice as long each time, at most this
 DOWN_AFTER = 10.0  # no video for this long: the stream counts as down (a drop that mends itself in a moment is not worth a word)
@@ -59,7 +60,8 @@ class Engine:
     """The models, shared by the cameras (one look at a time)."""
 
     def __init__(self, models: Path, model: str = "m", faces: bool = True, min_conf: float = 0.3, face_conf: float = 0.6, far: bool = True,
-                 idle_every: int = IDLE_EVERY, far_every: int = FAR_EVERY, min_fps: float = MIN_FPS) -> None:
+                 idle_every: int = IDLE_EVERY, far_every: int = FAR_EVERY, min_fps: float = MIN_FPS, gpu_decode: bool = True) -> None:
+        self.gpu_decode = gpu_decode  # a stream larger than is looked at is decoded on the card where that can be had (video.py)
         self.idle_every, self.far_every, self.min_fps = max(1, int(idle_every)), max(1, int(far_every)), float(min_fps)
         self.detector = Detector(Path(models) / f"yolox_{model}.onnx")
         face_model = Path(models) / "face_yunet.onnx"
@@ -203,6 +205,9 @@ class CameraWorker(threading.Thread):
         self.lost = 0
         self.restarts = 0  # times the following started afresh because the camera's clock did
         self.look_ms: deque = deque(maxlen=300)
+        self._below_since: float | None = None  # since when the floor has not been held
+        self._below_said = False
+        self.decode_ms: deque = deque(maxlen=300)  # what decoding a frame takes (and bringing a large one down)
         self.far_ms: deque = deque(maxlen=300)  # the looks that include the sharper one for people far off
         self._pace_state = self.pace.state(0.0)
 
@@ -242,7 +247,7 @@ class CameraWorker(threading.Thread):
             if self.decoder is not None:  # ... anew, after a drop
                 self._reopened = True
                 self.pace.reopened(time.monotonic())
-            self.decoder, self.codec = Decoder(item.codec, item.parameter_sets), item.codec
+            self.decoder, self.codec = Decoder(item.codec, item.parameter_sets, gpu=getattr(self.engine, "gpu_decode", True)), item.codec
             return
         if item[0] == "report":
             self._pace_state = self.pace.state(time.monotonic())  # (reports come whether or not frames do)
@@ -254,7 +259,13 @@ class CameraWorker(threading.Thread):
         unit, at = item
         if self.decoder is None:
             return
-        for rtp, frame in self.decoder.decode(unit):
+        started = time.perf_counter()
+        decoded = self.decoder.decode(unit, at)
+        self.decode_ms.append((time.perf_counter() - started) * 1000)
+        for rtp, frame in decoded:
+            # (a frame decoded on the card comes out with the next packet: it is of its own packet's time, but has
+            # waited only since it came out)
+            out, at = at, self.decoder.came(rtp, at)
             if self._reopened:
                 self._reopened = False
                 if not self.follow.continues(rtp, at):
@@ -271,11 +282,12 @@ class CameraWorker(threading.Thread):
             # is the view itself moving? Asked a few times a second, of every frame that comes (looked at or not)
             if self.view.due(rtp / 90.0):
                 started = time.perf_counter()
-                self.view.offer(rtp / 90.0, frame.to_ndarray(format="gray", width=VIEW_W, height=VIEW_H))
+                self.view.offer(rtp / 90.0, small_grey(frame, VIEW_W, VIEW_H))
                 self.view_ms.append((time.perf_counter() - started) * 1000)
             now = time.monotonic()
-            plan = self.pace.plan(max(0.0, time.time() - at / 1000.0), self.follow.busy(), now)
+            plan = self.pace.plan(max(0.0, time.time() - out / 1000.0), self.follow.busy(), now)
             self._pace_state = self.pace.state(now)
+            self._floor(self._pace_state, now)
             if not plan["look"]:
                 continue
             started = time.perf_counter()
@@ -290,6 +302,23 @@ class CameraWorker(threading.Thread):
                 when, ours = self.follow.last_frame
                 self.check.frame(when, picture(frame, CHECK_W, CHECK_H)[:, :, 1], ours)
 
+    def _floor(self, pace: dict[str, Any], now: float) -> None:
+        """Under the frame-rate floor is never passed over in silence: on
+        every packet and in the status as it happens (`below`), and in the
+        log once it has lasted BELOW_SAID seconds and once when it is over."""
+        if pace["below"]:
+            if self._below_since is None:
+                self._below_since = now
+            elif not self._below_said and now - self._below_since >= BELOW_SAID:
+                self._below_said = True
+                log.warning("A camera is under the frame-rate floor: %.1f of its frames a second are looked at, the floor is %d "
+                            "(decoding takes %s ms a frame, a look %s). Frames more than a second late are let go unlooked",
+                            pace["fps"], pace["floor"], _median(self.decode_ms), _median(self.look_ms))
+        elif self._below_since is not None:
+            if self._below_said:
+                log.warning("A camera is at its frame-rate floor again (it was under it for %d s)", now - self._below_since)
+            self._below_since, self._below_said = None, False
+
     def _rated(self, packet: dict[str, Any]) -> dict[str, Any]:
         """A packet with how the camera is being kept up with: frames looked
         at a second, the floor, and whether that floor is being held."""
@@ -302,7 +331,12 @@ class CameraWorker(threading.Thread):
         looks, fars = sorted(self.look_ms), sorted(self.far_ms)
         pace = self.pace.state(time.monotonic())
         return {
-            "codec": self.codec, **pace, "look_ms": round(looks[len(looks) // 2], 1) if looks else None,
+            "codec": self.codec,
+            # how the stream is decoded ("gpu": on the card, a large stream brought down there; "software"), its own
+            # size, and what decoding a frame takes
+            "decode": {"how": self.decoder.how if self.decoder else None, "size": list(self.decoder.size) if self.decoder and self.decoder.size else None,
+                       "ms": _median(self.decode_ms), "gpu_error": self.decoder.gpu_error if self.decoder else None},
+            **pace, "below_s": round(time.monotonic() - self._below_since) if self._below_since is not None else None, "look_ms": round(looks[len(looks) // 2], 1) if looks else None,
             "far_look_ms": round(fars[len(fars) // 2], 1) if fars else None,
             "lost": self.lost, "restarts": self.restarts, **self.follow.stats,
             "check": self.check.result(), "head_start": self.follow.head_start(), "local": dict(self.follow.local.stats),

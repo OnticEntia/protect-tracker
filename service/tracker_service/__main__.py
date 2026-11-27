@@ -28,6 +28,8 @@ def main() -> None:
                     help="the sharp look on one frame in this many (1: every frame, while the floor allows)")
     ap.add_argument("--min-fps", type=float, default=float(os.environ.get("TRACKER_MIN_FPS", str(MIN_FPS))),
                     help=f"the floor: frames of each camera looked at a second, whatever else gives way ({MIN_FPS} at least)")
+    ap.add_argument("--no-gpu-decode", action="store_true", default=os.environ.get("TRACKER_GPU_DECODE", "1") == "0",
+                    help="decode in software always (else a stream larger than 1280x720 is decoded on the graphics card where it can be)")
     args = ap.parse_args()
     if args.min_fps < MIN_FPS:
         ap.error(f"the floor (--min-fps / TRACKER_MIN_FPS) cannot be under {MIN_FPS} frames a second")
@@ -36,7 +38,8 @@ def main() -> None:
     models = Path(args.models)
     if not (models / f"yolox_{args.model}.onnx").exists():
         raise SystemExit(f"No yolox_{args.model}.onnx in the models folder (see the README for where to get it)")
-    engine = Engine(models, args.model, faces=not args.no_faces, far=not args.no_far, idle_every=args.idle_every, far_every=args.far_every, min_fps=args.min_fps)
+    engine = Engine(models, args.model, faces=not args.no_faces, far=not args.no_far, idle_every=args.idle_every, far_every=args.far_every, min_fps=args.min_fps,
+                    gpu_decode=not args.no_gpu_decode)
     logging.info("Detector yolox_%s on the %s%s; faces %s; sharp look %s", args.model, engine.device, " (fast copy)" if engine.detector.fast else "",
                  "on" if engine.face else "off", "on" if engine.far else "off")
     web.run_app(Service(engine).app(), host=args.host, port=args.port, print=None)

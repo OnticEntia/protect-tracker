@@ -93,7 +93,9 @@ class FakeCamera:
     def __init__(self, codec: str, packets: list[bytes], path: str = "/stream", pace: float = 0.0, port: int = 0) -> None:
         self.codec, self.packets, self.path, self.port = codec, packets, path, port
         self.pace = pace  # seconds between frames (0: everything at once)
+        self.stay = False
         self.asked: list[str] = []
+        self.gone = 0  # clients that have hung up, or been hung up on
         self.server: asyncio.AbstractServer | None = None
 
     async def __aenter__(self) -> FakeCamera:
@@ -140,8 +142,11 @@ class FakeCamera:
                         if i % 7 == 0:  # something on the other channel now and then, to be skipped
                             writer.write(b"$\x01\x00\x04abcd")
                     await writer.drain()
+                    if self.stay:  # the stream stays open until the client hangs up
+                        await reader.read()
                     break
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         finally:
+            self.gone += 1
             writer.close()

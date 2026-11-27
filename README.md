@@ -90,6 +90,7 @@ Two things are installed, and HACS only does the first.
 | `TRACKER_FAR` | `1` | `0`: without the sharp look (the picture at twice the size). |
 | `TRACKER_FAR_EVERY` | `1` | The sharp look on one frame in this many. |
 | `TRACKER_FACES` | `1` | `0`: no faces. |
+| `TRACKER_GPU_DECODE` | `1` | `0`: decode in software always. Else a stream larger than 1280×720 is decoded on the graphics card where that can be had (see [A camera's main stream](#a-cameras-main-stream)). |
 | `TRACKER_IDLE_EVERY` | `1` | While nothing moves, look at one frame in this many. `1` is every frame, always. More is only taken as far as the floor allows. |
 | `TRACKER_HOST`, `TRACKER_PORT` | `0.0.0.0`, `8791` in the container | Where the service listens. Publish the port on `127.0.0.1` only: there is no login. |
 | `TRACKER_LOG` | `INFO` | Log level. |
@@ -179,9 +180,13 @@ something else), the extras give way first, judged by how long a frame has waite
 | over 0.3 s | may be let go unlooked, while the rate stays above the floor |
 | over 1 s | is let go: catching up comes first |
 
-If the floor still cannot be held, that is said: every packet carries `fps` (frames looked at a second),
-`fpsFloor` and `fpsOk`, and `protect_tracker/status` has the same per camera, with counts of what was
-left out.
+If the floor still cannot be held (a stream the machine cannot decode fast enough, a card taken up by
+something else), the camera goes on being watched at the rate that can be had, and that is said, not
+hidden: every packet carries `fps` (frames looked at a second), `fpsFloor` and `fpsOk`;
+`protect_tracker/status` has the same per camera (`below`, and `below_s`: for how long), with counts of
+what was left out; and the service's log has a warning once it has lasted ten seconds, with what
+decoding and looking take, and a line when it is over. Frames more than a second late are still let go
+then: looking at them would only put everything further behind.
 
 ### The sharp look
 
@@ -204,11 +209,29 @@ On an RTX 3070 (8 GB), YOLOX-m, a 1280×720 H.265 stream at 30 frames a second.
 | Two cameras, sharp look on both | both at 30 frames a second, 84–95% of the card, 1.2 GB | measured with a stand-in second camera in a process of its own, for a minute |
 | Two cameras in the one service | every frame of both looked at; the sharp look gives way to the ordinary one on many frames of one of them | simulated from the measured times |
 
-Give a second camera its medium stream (1280×720), not only its main one. The main stream of a 4K
-camera takes about 13 ms a frame just to decode (measured on a recording, 8 Mbit/s; about one core),
-against 2–3 for the medium one, which leaves no room for the sharp look and little for anything else:
-the frame-rate floor is held by giving looks up. In Protect, enable RTSP for the medium stream as well;
-if Home Assistant then has both camera entities, enable the medium one (it may be made disabled).
+### A camera's main stream
+
+Nothing here looks closer than 1280×720, so a larger stream (a 4K camera's main one) is brought down
+to that as it is decoded, and from there on costs what a medium stream costs. Where the graphics card
+has a video decoder, the card decodes and shrinks it; else it is decoded in software and shrunk once.
+Measured on a 4K H.265 recording of 8 Mbit/s, per frame:
+
+| | Decoding | Shrinking for a look | CPU |
+|---|---|---|---|
+| On the card (`decode.how`: `gpu`) | 3.2 ms | 0.2 ms | 0.2 of a core |
+| In software (`software`) | 14.5 ms | 0.2 ms | 0.8 of a core |
+| The medium stream itself | under 1 ms | 0.2 ms | |
+
+With a second camera on its medium stream in the same service, at 30 frames a second each (and a second
+copy of the service busy on the same card at the time): decoded on the card the 4K camera had every
+frame looked at, 30 a second; in software it had 20.5, at the floor, with frames let go. So the main
+stream is fine where the card decodes it, and the medium stream is the one to use where it cannot.
+`TRACKER_GPU_DECODE=0` keeps to software. A frame decoded on the card comes one frame (33 ms) later
+than in software. In Docker the card's video libraries have to be in the container; with the NVIDIA
+runtime's defaults they are.
+
+The status says per camera how it is decoded: `decode.how`, `decode.size` (the stream's own size),
+`decode.ms` and, where the card was tried and could not, `decode.gpu_error`.
 
 Two cameras fit, with little to spare. A smaller model at 1280 (YOLOX-s: 14–18 ms a look) leaves room
 for the sharp look on both.
@@ -332,7 +355,7 @@ in a steady view (leaves, a flag, rain in the lamps) are learnt and left out.
 
 **What it costs.** One comparison is about 0.4 ms of work, ten times a second: some 4 ms of one
 processor core a second for each camera, off the graphics card. It is done on a small thread of its
-own beside the camera's: the camera's thread only makes the small picture (about 0.05 ms) and goes on
+own beside the camera's: the camera's thread only makes the small picture (about 0.1 ms) and goes on
 with the frame, so the check takes nothing from the frame-rate floor. Beside the service's other
 threads the comparing waits its turn between its many small steps, so by the clock it takes a few
 milliseconds rather than 0.4 (about 3.5 measured live with one camera); that wait is idle time, not

@@ -58,9 +58,10 @@ def test_the_sharp_look_takes_the_place_of_the_ordinary_one():
     engine = Engine.__new__(Engine)
     engine.detector, engine.wide, engine.face, engine.min_conf, engine._lock = Sized(640, 360), Sized(1280, 720), None, 0.3, threading.Lock()
 
-    class Frame:
-        def to_ndarray(self, format, width, height):  # noqa: A002
-            return np.zeros((height, width, 3), np.uint8)
+    def Frame():  # noqa: N802 - a decoded frame, as the decoder gives it
+        import av
+
+        return av.VideoFrame.from_ndarray(np.zeros((180, 320, 3), np.uint8), format="bgr24")
 
     assert engine.look(Frame())["vehicle"] and engine.detector.seen == [(360, 640, 3)] and engine.wide.seen == []
     assert engine.look(Frame(), far=True)["vehicle"] and engine.wide.seen == [(720, 1280, 3)] and len(engine.detector.seen) == 1

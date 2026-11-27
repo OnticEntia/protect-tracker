@@ -147,3 +147,26 @@ def test_no_frames_at_all_is_not_called_below():
         pace.plan(0.005, True, 50.0 + i / 30)
     state = pace.state(90.0)  # the stream has been down for half a minute
     assert state["fps"] == 0 and state["stream_fps"] == 0 and state["below"] is False
+
+
+def test_under_the_floor_is_said_in_the_log_once_and_once_when_it_is_over(caplog):
+    import logging
+
+    from tracker_service import camera
+    from tracker_service.camera import BELOW_SAID, CameraWorker
+
+    worker = CameraWorker.__new__(CameraWorker)
+    worker._below_since, worker._below_said, worker.decode_ms, worker.look_ms = None, False, [13.0], [10.0]
+    under, held = {"below": True, "fps": 14.0, "floor": 20.0}, {"below": False, "fps": 30.0, "floor": 20.0}
+    with caplog.at_level(logging.INFO, logger=camera.log.name):
+        worker._floor(held, 0.0)
+        for i in range(5):  # a moment under it: not worth a word
+            worker._floor(under, 1.0 + i)
+        worker._floor(held, 6.0)
+        assert not caplog.records
+        for i in range(int(BELOW_SAID) * 3):  # and for long
+            worker._floor(under, 10.0 + i)
+        worker._floor(held, 10.0 + BELOW_SAID * 3)
+        worker._floor(held, 11.0 + BELOW_SAID * 3)
+    said = [record.getMessage() for record in caplog.records]
+    assert len(said) == 2 and "under the frame-rate floor: 14.0" in said[0] and "floor again (it was under it for 30 s)" in said[1]
