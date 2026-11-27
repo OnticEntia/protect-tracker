@@ -204,6 +204,12 @@ On an RTX 3070 (8 GB), YOLOX-m, a 1280×720 H.265 stream at 30 frames a second.
 | Two cameras, sharp look on both | both at 30 frames a second, 84–95% of the card, 1.2 GB | measured with a stand-in second camera in a process of its own, for a minute |
 | Two cameras in the one service | every frame of both looked at; the sharp look gives way to the ordinary one on many frames of one of them | simulated from the measured times |
 
+Give a second camera its medium stream (1280×720), not only its main one. The main stream of a 4K
+camera takes about 13 ms a frame just to decode (measured on a recording, 8 Mbit/s; about one core),
+against 2–3 for the medium one, which leaves no room for the sharp look and little for anything else:
+the frame-rate floor is held by giving looks up. In Protect, enable RTSP for the medium stream as well;
+if Home Assistant then has both camera entities, enable the medium one (it may be made disabled).
+
 Two cameras fit, with little to spare. A smaller model at 1280 (YOLOX-s: 14–18 ms a look) leaves room
 for the sharp look on both.
 
@@ -275,6 +281,7 @@ of Home Assistant or of the service.
 | **A camera goes offline** (Protect still has it, but says it is not connected) | The service is told to stop watching it; nothing is tried while it is away. Its sensor is unavailable. Listeners are sent `{"status": "offline", "reason": "offline"}`. When Protect says it is connected again it is watched again by itself, and listeners are sent `{"status": "online"}`. |
 | **Its stream cannot be read** although Protect says the camera is connected | The service tries again after 1 s, then 2, 4 … up to once a minute, for as long as it is to be watched. After 10 s without video it says so once (`stream: "down"` in the status, one line in its log) and once more when it is back; the tries in between are not logged. Listeners are sent `{"status": "offline", "reason": "stream_down"}` and then `online`; the sensor is unavailable meanwhile. |
 | **None of its camera entities is enabled** in Home Assistant | There is no stream to be had: it is not watched (`no_stream`), its sensor is unavailable, and Auto still passes Protect's own boxes on. Enabling an entity again takes it up again. |
+| **RTSP is not enabled for it in Protect** (a camera just adopted, as a rule) | Home Assistant still makes one camera entity for it, for still pictures only; that is not a stream. It is not watched (`no_stream`, and `why` in the status says `rtsp_not_enabled`), its sensor is unavailable, and one line in the log says so. It is looked for again every two seconds: once the camera entity has a stream it is watched, with nothing reloaded. Should the entity say it has a stream but give no address yet, that is `no_address`, and asked again the same way. |
 | **A camera is removed from Protect** | Once it has been missing for ten seconds: the service is told to stop for good (the stream is closed, and its thread, tracks and rates are dropped), everything held of it in Home Assistant is dropped, listeners are sent `{"status": "removed", "error": {"code": "camera_removed", ...}}` and their subscriptions are ended, and its sensor is removed. Nothing is ever tried for it again. |
 | **A camera is adopted** | It is taken up within seconds: its sensor is made, and it is watched (at once with "Watch all the time", else from Protect's first report of something moving). |
 | **A camera just adopted is still settling** (no camera entity yet, no stream address yet, only its main stream at first) | It is waited for and asked again every two seconds, without a word in the log above debug. If only another stream than the one chosen is there, that one is watched, and the chosen one is taken as soon as its entity appears. Its sensor is made once the UniFi Protect integration has made the camera's device, and is named after it. |
@@ -429,7 +436,9 @@ person being followed, where the service finds one and Protect reports none, is 
 ### `protect_tracker/status`
 
 Is the service reached, which cameras there are (`cameras`) and how each stands (`states`: `watching`,
-`asleep`, `offline`, `stream_down` or `no_stream`), what is watched, and per watched camera: how its
+`asleep`, `offline`, `stream_down` or `no_stream`), why each camera that is not watched is not (`why`:
+`offline`, `no_camera_entity`, `rtsp_not_enabled`, `no_address`, `stream_down`, `service_away`, `quiet`
+(nothing moving; not with "Watch all the time") or `starting`), what is watched, and per watched camera: how its
 stream is (`stream`: `open`, `opening` or `down`, with `error`, `down_s` and `retry_s`), whether its
 view is moving and how often it has (`view`), the frame rate against the floor and what was
 left out, look times, how many of Protect's moving tracks are followed and why bindings were let go, a

@@ -87,6 +87,10 @@ _LOGGER = logging.getLogger(__name__)
 CHECK = timedelta(seconds=2)
 PLATFORMS = ["binary_sensor"]
 SEEN_HOLD_S = 3.0  # "person seen" stays on this long after the service's last box of a person
+STREAM_FEATURE = 2  # (CameraEntityFeature.STREAM)
+NO_ENTITY, NO_RTSP = "no_camera_entity", "rtsp_not_enabled"
+LACKS = {NO_ENTITY: "none of its camera entities is enabled in Home Assistant",
+         NO_RTSP: "its camera entity has no stream: enable RTSP for the camera in Protect, or use the UniFi Protect integration's repair for it"}
 REASK_S = 30.0  # while a camera's stream is down its address is asked for again this often (it may have changed)
 HOLD_S = 0.7  # Protect's box of a thing is held back this long after the service's last box of it
 
@@ -108,9 +112,24 @@ def camera_entities(hass: HomeAssistant) -> dict[str, str]:
     }
 
 
+def can_stream(hass: HomeAssistant, entity_id: str) -> bool:
+    """Does this camera entity have a stream just now? The UniFi Protect
+    integration keeps a camera entity for a camera none of whose streams is
+    shared (RTSP is not enabled for it in Protect): it shows still pictures
+    only, and says so by not having the stream feature."""
+    state = hass.states.get(entity_id)
+    if state is None:
+        return False
+    try:
+        return bool(int(state.attributes.get("supported_features") or 0) & STREAM_FEATURE)
+    except (TypeError, ValueError):
+        return False
+
+
 def stream_entity(hass: HomeAssistant, api: Any, camera_id: str, channel: int, by_uid: dict[str, str] | None = None) -> tuple[str, int] | None:
     """The camera entity of one of a Protect camera's streams: the wanted
-    channel if its entity is enabled, else whichever is. (entity id, channel)"""
+    channel if its entity is enabled and has a stream, else whichever is and
+    has. (entity id, channel)"""
     cam = api.bootstrap.cameras.get(camera_id) if api is not None else None
     if cam is None:
         return None
@@ -119,9 +138,20 @@ def stream_entity(hass: HomeAssistant, api: Any, camera_id: str, channel: int, b
         by_uid = camera_entities(hass)
     for ch in (channel, 1, 0, 2):
         entity = by_uid.get(f"{mac}_{ch}")
-        if entity:
+        if entity and can_stream(hass, entity):
             return entity, ch
     return None
+
+
+def why_no_stream(hass: HomeAssistant, cam: Any, by_uid: dict[str, str] | None = None) -> str:
+    """Why a camera has no stream to watch: none of its camera entities is
+    enabled (NO_ENTITY), or one is, but Home Assistant has no stream for it:
+    RTSP is not enabled for the camera in Protect, or the UniFi Protect
+    integration has not heard of it yet (NO_RTSP)."""
+    mac = (getattr(cam, "mac", None) or "").replace(":", "").upper()
+    if by_uid is None:
+        by_uid = camera_entities(hass)
+    return NO_RTSP if any(uid.rsplit("_", 1)[0].upper() == mac for uid in by_uid) else NO_ENTITY
 
 
 def _connected(cam: Any) -> bool:
@@ -132,11 +162,13 @@ def _connected(cam: Any) -> bool:
     return bool(getattr(cam, "is_connected", True))
 
 
-def cameras_now(hass: HomeAssistant, api: Any, channel: int, streams: dict[str, tuple[str, int]] | None = None) -> dict[str, str] | None:
+def cameras_now(hass: HomeAssistant, api: Any, channel: int, streams: dict[str, tuple[str, int]] | None = None,
+                why: dict[str, str] | None = None) -> dict[str, str] | None:
     """The cameras this Protect has that recognise things, and how each
     stands (roster.py). None when Protect cannot be asked (the UniFi Protect
     integration isn't loaded just now). `streams` is filled with the stream
-    each ready camera is to be watched by: (entity id, channel)."""
+    each ready camera is to be watched by: (entity id, channel); `why` with
+    why each camera that has none has none."""
     if api is None:
         return None
     by_uid = camera_entities(hass)
@@ -153,6 +185,8 @@ def cameras_now(hass: HomeAssistant, api: Any, channel: int, streams: dict[str, 
             out[cam.id] = OFFLINE
         elif (found := stream_entity(hass, api, cam.id, channel, by_uid)) is None:
             out[cam.id] = NO_STREAM
+            if why is not None:
+                why[cam.id] = why_no_stream(hass, cam, by_uid)
         else:
             out[cam.id] = READY
             if streams is not None:
@@ -195,6 +229,8 @@ class TrackerHub:
         self.add_sensor: Callable[[str], None] | None = None  # (binary_sensor.py) makes a camera's sensor
         self.gone_listeners: dict[str, set[Callable[[], None]]] = {}  # camera -> told when it is removed for good
         self._ends: dict[Send, Callable[[], None]] = {}  # a listener -> what ends its subscription
+        self.lacking: dict[str, str] = {}  # camera -> why it has no stream to watch (NO_ENTITY | NO_RTSP)
+        self.no_address: set[str] = set()  # cameras whose camera entity says it has a stream but gives no address for it
         self._streams: dict[str, tuple[str, int]] = {}  # camera -> the stream it is to be watched by just now: (entity, channel)
         self._waking: set[str] = set()  # cameras whose stream address is being fetched just now
         self._relay_failed: Any = None  # the relay that could not be listened to (said once)
@@ -229,9 +265,10 @@ class TrackerHub:
             self._relay = relay
         api = _protect_api(self.hass)
         streams: dict[str, tuple[str, int]] = {}
-        seen = cameras_now(self.hass, api, self.channel, streams)
+        lacking: dict[str, str] = {}
+        seen = cameras_now(self.hass, api, self.channel, streams, lacking)
         if seen is not None:
-            self._streams = streams
+            self._streams, self.lacking = streams, lacking
         for camera, was, now in self.roster.update(seen):
             if now is None:
                 self._removed(camera)
@@ -239,11 +276,14 @@ class TrackerHub:
                 cam = api.bootstrap.cameras.get(camera) if api is not None else None
                 self.macs[camera] = getattr(cam, "mac", None) or ""
                 _LOGGER.info("A camera has been taken up (%d now)", len(self.roster.cameras))
+                if now == NO_STREAM:
+                    _LOGGER.info("It has no stream to watch yet (%s): looked for again every %d s", LACKS.get(lacking.get(camera), "not known why"), CHECK.total_seconds())
             elif now == READY:
                 _LOGGER.info("A camera is back")
                 self._say(camera, "online")
             else:
-                _LOGGER.info("A camera is %s: it is left alone until it is back", "offline" if now == OFFLINE else "without a stream to watch")
+                _LOGGER.info("A camera is %s: it is left alone until it is back",
+                             "offline" if now == OFFLINE else f"without a stream to watch ({LACKS.get(lacking.get(camera), 'not known why')})")
                 self._let_go(camera)
                 self._say(camera, "offline", now)
             self._seen_changed(camera)
@@ -275,6 +315,7 @@ class TrackerHub:
         self.waker.forget(camera)
         self._fresh.pop(camera, None)
         self.stream_down.discard(camera)
+        self.no_address.discard(camera)
         self.view.pop(camera, None)
         self.seen.pop(camera, None)
         self.watching.pop(camera, None)
@@ -326,7 +367,26 @@ class TrackerHub:
             return state
         if camera in self.stream_down:
             return "stream_down"
+        if camera in self.no_address and camera not in self.watching:
+            return NO_STREAM
         return "watching" if self.link.connected and camera in self.watching else "asleep"
+
+    def why(self, camera: str) -> str | None:
+        """Why a camera is not being watched (None: it is)."""
+        state = self.state(camera)
+        if state == "watching":
+            return None
+        if state == OFFLINE:
+            return "offline"  # Protect says it is not connected (or Protect cannot be asked)
+        if state == NO_STREAM:
+            return "no_address" if self.roster.cameras.get(camera) == READY else self.lacking.get(camera, NO_ENTITY)
+        if state == "stream_down":
+            return "stream_down"  # the service cannot read its stream (its error is in the service's part of the status)
+        if not self.link.connected:
+            return "service_away"
+        if camera not in self.waker.awake:
+            return "quiet"  # nothing moving that Protect has reported: it is watched when something does
+        return "starting"  # about to be: its stream's address is being fetched or has just been sent
 
     def _detach(self) -> None:
         for unsub in self._unsubs.values():
@@ -371,8 +431,15 @@ class TrackerHub:
             except Exception:  # noqa: BLE001
                 source = None
             if not source:
-                _LOGGER.debug("No stream address for a camera that was to be watched")
+                if camera not in self.no_address:
+                    self.no_address.add(camera)
+                    _LOGGER.info("A camera's entity gives no stream address yet: asked again every %d s", CHECK.total_seconds())
+                    self._seen_changed(camera)
                 return
+            if camera in self.no_address:
+                self.no_address.discard(camera)
+                _LOGGER.info("A camera's stream address is there now")
+                self._seen_changed(camera)
             if camera not in self.waker.awake or self.roster.cameras.get(camera) != READY:
                 return  # gone quiet, or gone, meanwhile
             key, held = hash(source), self.watching.get(camera)
@@ -540,6 +607,7 @@ class TrackerHub:
             "reports": self._relay is not None and bool(self._unsubs),
             "cameras": sorted(self.roster.cameras),
             "states": {cam: self.state(cam) for cam in sorted(self.roster.cameras)},
+            "why": {cam: why for cam in sorted(self.roster.cameras) if (why := self.why(cam))},  # why each camera not watched is not
             "view": {cam: self.view.get(cam, "steady") for cam in sorted(self.watching)},
             "watching": {cam: {k: info[k] for k in ("entity", "channel", "since")} for cam, info in self.watching.items()},
             "listeners": {f"{cam} {mode}": len(sends) for (cam, mode), sends in self.listeners.items()},

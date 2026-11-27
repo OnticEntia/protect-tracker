@@ -7,6 +7,9 @@ from unittest.mock import patch
 from aiohttp import WSMsgType, web
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from homeassistant.helpers import entity_registry as er
+
+from custom_components.protect_tracker import stream_entity as REAL_STREAM_ENTITY
 from custom_components.protect_tracker.const import DOMAIN
 
 WALKING = {"clockWall": 1, "clockStream": 1, "tracks": [{"id": "2", "objectType": "person", "stationary": False, "coord": [1, 2, 3, 4]}]}
@@ -471,7 +474,7 @@ async def test_a_camera_still_settling_is_waited_for_quietly(hass, socket_enable
         with patch("custom_components.protect_tracker.async_get_stream_source", return_value=None):
             await it.check(5)
             await asyncio.sleep(0.05)
-            assert it.hub.status()["states"] == {"cam9": "asleep"} and it.service.got == []
+            assert it.hub.status()["states"] == {"cam9": "no_stream"} and it.hub.status()["why"] == {"cam9": "no_address"} and it.service.got == []
         # only its main stream at first: that is watched, and the stream wanted is taken as soon as it is there
         with patch("custom_components.protect_tracker.stream_entity", return_value=("camera.somewhere_high", 0)):
             await it.check(2)
@@ -600,3 +603,62 @@ async def test_the_sensors_device_carries_the_cameras_name(hass, socket_enabled,
     assert info["name"] == "Somewhere" and info["connections"] == {(dr.CONNECTION_NETWORK_MAC, "aa:bb:cc:00:11:22")}
     assert "manufacturer" not in info  # what the camera's device does not say is left out, not set to nothing
     assert "name" not in device_info("AA:BB:CC:00:11:22", None)
+
+
+async def test_a_camera_whose_rtsp_is_enabled_late_is_taken_up_by_asking_again(hass, socket_enabled, unused_tcp_port, hass_ws_client, caplog):
+    """The order it happened in: the camera is adopted with no stream shared;
+    Home Assistant makes a camera entity for it all the same (still pictures
+    only); RTSP is enabled later, and the address comes later still."""
+    registry = er.async_get(hass)
+    async with Going(hass, unused_tcp_port, Protect()) as it:
+        client = await hass_ws_client(hass)
+
+        async def status():
+            await client.send_json_auto_id({"type": "protect_tracker/status"})
+            return (await client.receive_json())["result"]
+
+        with patch("custom_components.protect_tracker.stream_entity", REAL_STREAM_ENTITY), caplog.at_level("INFO"):
+            # adopted: no camera entity of it yet
+            it.protect.cameras["cam9"] = Cam("cam9", "AA:BB:CC:00:11:99")
+            device_of(hass, "AA:BB:CC:00:11:99")
+            await it.check(3)
+            now = await status()
+            assert now["states"] == {"cam9": "no_stream"} and now["why"] == {"cam9": "no_camera_entity"}
+            # its entity appears, for the main stream, without a stream: RTSP is not enabled
+            entity = registry.async_get_or_create("camera", "unifiprotect", "AABBCC001199_0", suggested_object_id="somewhere_high").entity_id
+            hass.states.async_set(entity, "recording", {"supported_features": 0})
+            await it.check(20)  # ... and stays so for a good while
+            now = await status()
+            assert now["states"] == {"cam9": "no_stream"} and now["why"] == {"cam9": "rtsp_not_enabled"}  # not "asleep"
+            assert it.service.got == [] and hass.states.get(it.sensor()).state == "unavailable"
+            # RTSP is enabled: the entity has a stream now, but no address for it at first
+            hass.states.async_set(entity, "recording", {"supported_features": 2})
+            with patch("custom_components.protect_tracker.async_get_stream_source", return_value=None):
+                await it.check(5)
+                await asyncio.sleep(0.05)
+                now = await status()
+                assert now["states"] == {"cam9": "no_stream"} and now["why"] == {"cam9": "no_address"} and it.service.got == []
+            # the address is there: watched, on the main stream, with nothing reloaded
+            await it.check(2)
+            watch = (await it.service.wait_for("watch"))[0]
+            assert watch["camera"] == "cam9" and watch["channel"] == 0
+            now = await status()
+            assert now["states"] == {"cam9": "watching"} and now["why"] == {} and now["watching"]["cam9"]["channel"] == 0
+            assert hass.states.get(it.sensor()).state == "off"
+            # the medium stream is enabled after that: taken instead, as that is the one chosen
+            medium = registry.async_get_or_create("camera", "unifiprotect", "AABBCC001199_1", suggested_object_id="somewhere_medium").entity_id
+            hass.states.async_set(medium, "recording", {"supported_features": 2})
+            await it.check(2)
+            assert (await it.service.wait_for("watch", 2))[1]["channel"] == 1
+        said = [r.getMessage() for r in caplog.records if r.name.startswith("custom_components.protect_tracker")]
+        assert sum("no stream to watch yet" in line for line in said) == 1  # each said once, not every two seconds
+        assert sum("gives no stream address yet" in line for line in said) == 1
+        assert not [r for r in caplog.records if r.name.startswith("custom_components.protect_tracker") and r.levelname in ("WARNING", "ERROR")]
+
+
+async def test_an_always_on_camera_with_a_stream_does_not_rest_asleep(hass, socket_enabled, unused_tcp_port):
+    async with Going(hass, unused_tcp_port, Protect(Cam())) as it:
+        await it.check()
+        await it.service.wait_for("watch")
+        status = it.hub.status()
+        assert status["states"] == {"cam1": "watching"} and status["why"] == {}
